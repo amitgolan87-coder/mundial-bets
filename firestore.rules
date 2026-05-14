@@ -1,0 +1,102 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+
+    // === USERS ===
+    // Anyone signed in can read user profile docs (for leaderboard).
+    // Users can update their own profile but cannot grant themselves admin.
+    // Admins can update any user.
+    match /users/{uid} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(uid);
+      allow update: if (isOwner(uid) &&
+                       request.resource.data.isAdmin == resource.data.isAdmin &&
+                       request.resource.data.matchPoints == resource.data.matchPoints &&
+                       request.resource.data.livePoints == resource.data.livePoints &&
+                       request.resource.data.duelPoints == resource.data.duelPoints)
+                    || isAdmin();
+      allow delete: if isAdmin();
+
+      // === USER'S MATCH BETS ===
+      // Users can write their own bets.
+      // CRITICAL: A user can only READ their own bets OR bets where the
+      // associated match is already locked (within 24h of kickoff) or finished.
+      // This prevents seeing others' predictions before the deadline.
+      match /bets/{matchId} {
+        allow create, update: if isOwner(uid);
+        allow delete: if isAdmin();
+        // Users always see their own bets. Others see bets only after match locks.
+        allow read: if isOwner(uid) || isAdmin() || (
+          isSignedIn() &&
+          exists(/databases/$(database)/documents/matches/$(matchId)) &&
+          (
+            get(/databases/$(database)/documents/matches/$(matchId)).data.status == 'finished' ||
+            get(/databases/$(database)/documents/matches/$(matchId)).data.kickoffAt < request.time + duration.value(24, 'h')
+          )
+        );
+      }
+
+      // === USER'S LIVE BET ENTRIES ===
+      // Similar to match bets - others can see only after live bet closes.
+      match /liveEntries/{liveBetId} {
+        allow create, update: if isOwner(uid);
+        allow delete: if isAdmin();
+        allow read: if isOwner(uid) || isAdmin() || (
+          isSignedIn() &&
+          exists(/databases/$(database)/documents/liveBets/$(liveBetId)) &&
+          (
+            get(/databases/$(database)/documents/liveBets/$(liveBetId)).data.settled == true ||
+            get(/databases/$(database)/documents/liveBets/$(liveBetId)).data.closesAt < request.time
+          )
+        );
+      }
+    }
+
+    // === MATCHES ===
+    // Everyone signed in can read. Only admins can write.
+    match /matches/{matchId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // === LIVE BETS ===
+    match /liveBets/{liveBetId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // === DUELS ===
+    // Everyone signed in can read duels.
+    // Authenticated users can create duels (challenger).
+    // Users can accept (update) an open duel where they are not the challenger.
+    // Admins can settle.
+    match /duels/{duelId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.challengerId == request.auth.uid;
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        resource.data.status == 'open' &&
+        resource.data.challengerId != request.auth.uid &&
+        request.resource.data.opponentId == request.auth.uid &&
+        request.resource.data.status == 'accepted'
+      );
+      allow delete: if isAdmin();
+    }
+  }
+}
