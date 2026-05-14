@@ -21,6 +21,8 @@ import { MATCH_POINT_TOTAL, pickRandomRealisticScore } from '../utils/constants'
 import { calculateMatchPoints, formatDateTime } from '../utils/scoring';
 import { TEAMS, TEAMS_LIST, getTeam } from '../utils/teams';
 import { WC_2026_MATCHES } from '../utils/schedule';
+import MatchPicker from '../components/MatchPicker';
+import RelatedMatches from '../components/RelatedMatches';
 
 export default function AdminPage() {
   const { profile } = useAuth();
@@ -471,6 +473,9 @@ function ManageLiveBets() {
             {lb.maxStake && <span> · מקס׳ {lb.maxStake}</span>}
             {lb.settled && <span> · {lb.outcome === 'yes' ? '✓ קרה' : '✗ לא קרה'}</span>}
           </div>
+          {lb.matchIds && lb.matchIds.length > 0 && (
+            <RelatedMatches matchIds={lb.matchIds} />
+          )}
           {!lb.settled ? (
             <div className="row-2">
               <button className="btn-sm btn-gold" onClick={() => setSettling(lb)}>הכרע</button>
@@ -495,13 +500,27 @@ function LiveBetFormModal({ onClose }) {
   const [description, setDescription] = useState('');
   const [multiplier, setMultiplier] = useState(2);
   const [closesAt, setClosesAt] = useState('');
+  const [closesAtAuto, setClosesAtAuto] = useState(true); // auto-calc by default
   const [maxStake, setMaxStake] = useState('');
   const [hasNoOption, setHasNoOption] = useState(false);
+  const [matchIds, setMatchIds] = useState([]);
   const [err, setErr] = useState('');
+
+  // Auto-update closesAt when matches are picked (2h before earliest kickoff)
+  const handleMatchesChange = (ids, earliestMillis) => {
+    setMatchIds(ids);
+    if (closesAtAuto && earliestMillis) {
+      const closeMillis = earliestMillis - 2 * 60 * 60 * 1000;
+      const d = new Date(closeMillis);
+      const pad = (n) => String(n).padStart(2, '0');
+      setClosesAt(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
+    }
+  };
 
   const save = async () => {
     setErr('');
-    if (!title || !closesAt) { setErr('כותרת וזמן סגירה חובה'); return; }
+    if (!title) { setErr('כותרת חובה'); return; }
+    if (!closesAt) { setErr('זמן סגירה חובה'); return; }
     if (multiplier < 1.1) { setErr('יחס לפחות 1.1'); return; }
     await addDoc(collection(db, 'liveBets'), {
       title, description,
@@ -509,6 +528,7 @@ function LiveBetFormModal({ onClose }) {
       closesAt: new Date(closesAt),
       maxStake: maxStake ? Number(maxStake) : null,
       hasNoOption,
+      matchIds, // array of match IDs this live bet relates to
       settled: false,
       createdAt: serverTimestamp(),
     });
@@ -529,6 +549,15 @@ function LiveBetFormModal({ onClose }) {
           <label>תיאור (אופציונלי)</label>
           <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows="2" />
         </div>
+
+        <div className="field">
+          <label>משחקים רלוונטיים</label>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+            בחר טווח תאריכים או בחירה ידנית. זמן הסגירה יחושב אוטומטית - שעתיים לפני המשחק הראשון.
+          </div>
+          <MatchPicker selectedIds={matchIds} onChange={handleMatchesChange} />
+        </div>
+
         <div className="row-2">
           <div className="field">
             <label>יחס (x)</label>
@@ -539,10 +568,20 @@ function LiveBetFormModal({ onClose }) {
             <input type="number" value={maxStake} onChange={(e) => setMaxStake(e.target.value)} min="1" />
           </div>
         </div>
+
         <div className="field">
-          <label>זמן סגירה (שעתיים לפני המשחק הראשון)</label>
-          <input type="datetime-local" value={closesAt} onChange={(e) => setClosesAt(e.target.value)} />
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <input type="checkbox" checked={closesAtAuto} onChange={(e) => setClosesAtAuto(e.target.checked)} style={{ width: 'auto' }} />
+            חשב אוטומטית (שעתיים לפני המשחק הראשון)
+          </label>
+          <label>זמן סגירה</label>
+          <input
+            type="datetime-local"
+            value={closesAt}
+            onChange={(e) => { setClosesAt(e.target.value); setClosesAtAuto(false); }}
+          />
         </div>
+
         <div className="field">
           <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <input type="checkbox" checked={hasNoOption} onChange={(e) => setHasNoOption(e.target.checked)} style={{ width: 'auto' }} />

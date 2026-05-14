@@ -13,6 +13,7 @@ import {
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime } from '../utils/scoring';
+import MatchPicker from '../components/MatchPicker';
 
 export default function DuelsPage() {
   const { user, profile } = useAuth();
@@ -129,6 +130,8 @@ function DuelCard({ duel, uid, balance }) {
       </div>
       <div className="duel-claim">"{duel.claim}"</div>
 
+      <RelatedMatches matchIds={duel.matchIds || []} />
+
       <div className="duel-stake">
         <span>סיכון כל צד:</span>
         <span className="stake-amount">{duel.stake} נק׳</span>
@@ -178,8 +181,20 @@ function CreateDuelModal({ onClose, uid, balance, displayName }) {
   const [claim, setClaim] = useState('');
   const [stakeStr, setStakeStr] = useState('');
   const [deadlineStr, setDeadlineStr] = useState('');
+  const [deadlineAuto, setDeadlineAuto] = useState(true);
+  const [matchIds, setMatchIds] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+
+  // Auto-update deadline = earliest match kickoff (max deadline for duel)
+  const handleMatchesChange = (ids, earliestMillis) => {
+    setMatchIds(ids);
+    if (deadlineAuto && earliestMillis) {
+      const d = new Date(earliestMillis);
+      const pad = (n) => String(n).padStart(2, '0');
+      setDeadlineStr(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
+    }
+  };
 
   const submit = async () => {
     setErr('');
@@ -208,6 +223,7 @@ function CreateDuelModal({ onClose, uid, balance, displayName }) {
           stake,
           status: 'open',
           deadline: deadlineStr ? new Date(deadlineStr) : null,
+          matchIds,
           createdAt: serverTimestamp(),
         });
       });
@@ -251,11 +267,23 @@ function CreateDuelModal({ onClose, uid, balance, displayName }) {
         </div>
 
         <div className="field">
-          <label>תאריך הכרעה (אופציונלי)</label>
+          <label>משחקים רלוונטיים (אופציונלי)</label>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+            הימור על משחקים ספציפיים? בחר טווח תאריכים או בחירה ידנית. תאריך ההכרעה ייקבע אוטומטית לפי המשחק המוקדם בטווח.
+          </div>
+          <MatchPicker selectedIds={matchIds} onChange={handleMatchesChange} />
+        </div>
+
+        <div className="field">
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <input type="checkbox" checked={deadlineAuto} onChange={(e) => setDeadlineAuto(e.target.checked)} style={{ width: 'auto' }} />
+            תאריך הכרעה אוטומטי (לפי המשחק המוקדם)
+          </label>
+          <label>תאריך הכרעה</label>
           <input
             type="datetime-local"
             value={deadlineStr}
-            onChange={(e) => setDeadlineStr(e.target.value)}
+            onChange={(e) => { setDeadlineStr(e.target.value); setDeadlineAuto(false); }}
           />
         </div>
 

@@ -12,6 +12,7 @@ import {
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime, formatTimeUntil } from '../utils/scoring';
+import RelatedMatches from '../components/RelatedMatches';
 
 export default function LiveBetsPage() {
   const { user, profile } = useAuth();
@@ -139,6 +140,8 @@ function LiveBetCard({ liveBet, entry, uid, balance }) {
           {liveBet.description}
         </div>
       )}
+
+      <RelatedMatches matchIds={liveBet.matchIds || []} />
 
       <div className="livebet-meta">
         <span className="multiplier-pill">x{liveBet.multiplier}</span>
