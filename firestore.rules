@@ -57,6 +57,15 @@ service cloud.firestore {
           )
         );
       }
+
+      // === USER'S ADJUSTMENT LOG ===
+      // Audit log for admin point adjustments. Only admin can write.
+      // User can read their own log; admin can read anyone's.
+      match /adjustments/{adjustmentId} {
+        allow read: if isOwner(uid) || isAdmin();
+        allow create: if isAdmin();
+        allow update, delete: if false; // immutable audit trail
+      }
     }
 
     // === COLLECTION GROUP QUERIES (for Transparency page) ===
@@ -104,7 +113,17 @@ service cloud.firestore {
         request.resource.data.opponentId == request.auth.uid &&
         request.resource.data.status == 'accepted'
       );
-      allow delete: if isAdmin();
+      // Delete: admin, OR challenger when status is open,
+      // OR challenger/opponent when status is accepted (mutual cancel)
+      allow delete: if isAdmin() || (
+        isSignedIn() &&
+        resource.data.status == 'open' &&
+        resource.data.challengerId == request.auth.uid
+      ) || (
+        isSignedIn() &&
+        resource.data.status == 'accepted' &&
+        (resource.data.challengerId == request.auth.uid || resource.data.opponentId == request.auth.uid)
+      );
     }
   }
 }

@@ -90,6 +90,19 @@ function DuelCard({ duel, uid, balance }) {
 
   const canAccept = duel.status === 'open' && duel.challengerId !== uid && balance >= duel.stake;
   const isMine = duel.challengerId === uid || duel.opponentId === uid;
+  const isChallenger = duel.challengerId === uid;
+  const isOpponent = duel.opponentId === uid;
+
+  // Cancellation rules:
+  // - Open duel: only challenger can cancel (refund self)
+  // - Accepted duel: challenger or opponent can cancel (refund both)
+  // - Both block if past deadline
+  const isPastDeadline = duel.deadline
+    ? Date.now() > (duel.deadline.toMillis ? duel.deadline.toMillis() : new Date(duel.deadline).getTime())
+    : false;
+
+  const canCancelOpen = duel.status === 'open' && isChallenger && !isPastDeadline;
+  const canCancelAccepted = duel.status === 'accepted' && (isChallenger || isOpponent) && !isPastDeadline;
 
   const accept = async () => {
     setBusy(true);
@@ -116,6 +129,57 @@ function DuelCard({ duel, uid, balance }) {
         });
       });
       setMsg('קיבלת את הדו-קרב ✓');
+    } catch (e) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelMyOpen = async () => {
+    if (!confirm('לבטל את הדו-קרב? תקבל את הנקודות חזרה.')) return;
+    setBusy(true);
+    setMsg('');
+    try {
+      await runTransaction(db, async (tx) => {
+        const duelRef = doc(db, 'duels', duel.id);
+        const dSnap = await tx.get(duelRef);
+        if (!dSnap.exists() || dSnap.data().status !== 'open') {
+          throw new Error('לא ניתן לבטל - הדו-קרב כבר התקבל');
+        }
+        const userRef = doc(db, 'users', uid);
+        const userSnap = await tx.get(userRef);
+        tx.update(userRef, { balance: (userSnap.data().balance || 0) + duel.stake });
+        tx.delete(duelRef);
+      });
+      setMsg('בוטל ✓');
+    } catch (e) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelAccepted = async () => {
+    if (!confirm(`לבטל את הדו-קרב? הנקודות יוחזרו לשניכם.`)) return;
+    setBusy(true);
+    setMsg('');
+    try {
+      await runTransaction(db, async (tx) => {
+        const duelRef = doc(db, 'duels', duel.id);
+        const dSnap = await tx.get(duelRef);
+        if (!dSnap.exists() || dSnap.data().status !== 'accepted') {
+          throw new Error('הדו-קרב כבר הוכרע או בוטל');
+        }
+        const challengerRef = doc(db, 'users', duel.challengerId);
+        const opponentRef = doc(db, 'users', duel.opponentId);
+        const c = await tx.get(challengerRef);
+        const o = await tx.get(opponentRef);
+        tx.update(challengerRef, { balance: (c.data().balance || 0) + duel.stake });
+        tx.update(opponentRef, { balance: (o.data().balance || 0) + duel.stake });
+        tx.delete(duelRef);
+      });
+      setMsg('בוטל ✓');
     } catch (e) {
       setMsg(e.message);
     } finally {
@@ -163,8 +227,21 @@ function DuelCard({ duel, uid, balance }) {
         <div className="locked-message">אין לך מספיק נקודות לאתגר הזה</div>
       )}
 
+      {canCancelOpen && (
+        <button className="btn btn-secondary" style={{ marginTop: 10 }} onClick={cancelMyOpen} disabled={busy}>
+          {busy ? '…' : '❌ בטל את הדו-קרב'}
+        </button>
+      )}
+
       {duel.status === 'accepted' && (
-        <div className="locked-message">ממתין להכרעה ע"י אדמין</div>
+        <>
+          <div className="locked-message">ממתין להכרעה ע"י אדמין</div>
+          {canCancelAccepted && (
+            <button className="btn btn-secondary" style={{ marginTop: 8 }} onClick={cancelAccepted} disabled={busy}>
+              {busy ? '…' : '❌ בטל ותחזיר נקודות לשני הצדדים'}
+            </button>
+          )}
+        </>
       )}
 
       {msg && (

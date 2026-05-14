@@ -448,6 +448,8 @@ function ManageLiveBets() {
   const [liveBets, setLiveBets] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
   const [settling, setSettling] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState('');
 
   useEffect(() => {
     const q = query(collection(db, 'liveBets'), orderBy('createdAt', 'desc'));
@@ -457,11 +459,82 @@ function ManageLiveBets() {
     return () => unsub();
   }, []);
 
+  // Cancel a live bet: refund all stakes back to users, mark as cancelled
+  const cancelLiveBet = async (lb) => {
+    if (!confirm(`לבטל את ההימור "${lb.title}"?\nכל הנקודות שהושקעו יוחזרו לשחקנים.`)) return;
+    setBusy(lb.id);
+    setMsg('');
+    try {
+      // Get all entries for this live bet across all users
+      const usersSnap = await getDocs(collection(db, 'users'));
+      const batch = writeBatch(db);
+      let refundedCount = 0;
+      let refundedTotal = 0;
+
+      for (const userDoc of usersSnap.docs) {
+        const uid = userDoc.id;
+        const entryRef = doc(db, 'users', uid, 'liveEntries', lb.id);
+        const entrySnap = await getDoc(entryRef);
+        if (!entrySnap.exists()) continue;
+        const entry = entrySnap.data();
+        if (entry.settled) continue; // skip already settled (shouldn't happen but safe)
+
+        const stake = entry.stake || 0;
+        // Refund stake back to balance
+        batch.update(doc(db, 'users', uid), {
+          balance: (userDoc.data().balance || 0) + stake,
+        });
+        // Delete the entry (or mark cancelled)
+        batch.delete(entryRef);
+        refundedCount++;
+        refundedTotal += stake;
+      }
+
+      // Mark live bet as cancelled
+      batch.update(doc(db, 'liveBets', lb.id), {
+        cancelled: true,
+        cancelledAt: serverTimestamp(),
+        settled: true, // so it won't be shown as active
+        outcome: 'cancelled',
+      });
+
+      await batch.commit();
+      setMsg(`✓ בוטל. הוחזרו ${refundedTotal} נק׳ ל-${refundedCount} שחקנים.`);
+      setTimeout(() => setMsg(''), 4000);
+    } catch (e) {
+      setMsg('שגיאה: ' + e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Hard delete: only if nobody has bet on it
+  const hardDeleteLiveBet = async (lb) => {
+    // Check if anyone has entries
+    const usersSnap = await getDocs(collection(db, 'users'));
+    let hasEntries = false;
+    for (const userDoc of usersSnap.docs) {
+      const entrySnap = await getDoc(doc(db, 'users', userDoc.id, 'liveEntries', lb.id));
+      if (entrySnap.exists()) { hasEntries = true; break; }
+    }
+    if (hasEntries) {
+      alert('יש שחקנים שכבר הימרו על ההימור הזה.\nהשתמש ב"בטל" כדי להחזיר להם את הנקודות.');
+      return;
+    }
+    if (!confirm('למחוק את ההימור (אין שום הימורים עליו)?')) return;
+    await deleteDoc(doc(db, 'liveBets', lb.id));
+  };
+
   return (
     <>
       <button className="btn btn-gold" onClick={() => setShowAdd(true)} style={{ marginBottom: 16 }}>
         + הוסף הימור לייב
       </button>
+
+      {msg && (
+        <div className={msg.includes('✓') ? 'success-msg' : 'error-msg'}>{msg}</div>
+      )}
+
       {liveBets.map((lb) => (
         <div key={lb.id} className="admin-card">
           <div className="flex-between" style={{ marginBottom: 6 }}>
@@ -471,20 +544,36 @@ function ManageLiveBets() {
           <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 10 }}>
             נסגר: {formatDateTime(lb.closesAt)}
             {lb.maxStake && <span> · מקס׳ {lb.maxStake}</span>}
-            {lb.settled && <span> · {lb.outcome === 'yes' ? '✓ קרה' : '✗ לא קרה'}</span>}
+            {lb.cancelled && <span style={{ color: 'var(--loss)' }}> · ❌ בוטל</span>}
+            {lb.settled && !lb.cancelled && <span> · {lb.outcome === 'yes' ? '✓ קרה' : '✗ לא קרה'}</span>}
           </div>
           {lb.matchIds && lb.matchIds.length > 0 && (
             <RelatedMatches matchIds={lb.matchIds} />
           )}
-          {!lb.settled ? (
+          {lb.cancelled ? (
             <div className="row-2">
-              <button className="btn-sm btn-gold" onClick={() => setSettling(lb)}>הכרע</button>
-              <button className="btn-sm btn-danger" onClick={async () => {
-                if (confirm('למחוק?')) await deleteDoc(doc(db, 'liveBets', lb.id));
-              }}>מחק</button>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0' }}>בוטל - נקודות הוחזרו</div>
+              <button className="btn-sm btn-danger" onClick={() => hardDeleteLiveBet(lb)} disabled={busy === lb.id}>
+                🗑️ הסר מהרשימה
+              </button>
+            </div>
+          ) : !lb.settled ? (
+            <div className="row-3">
+              <button className="btn-sm btn-gold" onClick={() => setSettling(lb)} disabled={busy === lb.id}>הכרע</button>
+              <button className="btn-sm btn-secondary" onClick={() => cancelLiveBet(lb)} disabled={busy === lb.id}>
+                {busy === lb.id ? '…' : '❌ בטל'}
+              </button>
+              <button className="btn-sm btn-danger" onClick={() => hardDeleteLiveBet(lb)} disabled={busy === lb.id}>
+                🗑️
+              </button>
             </div>
           ) : (
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>הוכרע</div>
+            <div className="row-2">
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0' }}>הוכרע</div>
+              <button className="btn-sm btn-danger" onClick={() => hardDeleteLiveBet(lb)} disabled={busy === lb.id}>
+                🗑️ הסר
+              </button>
+            </div>
           )}
         </div>
       ))}
@@ -681,6 +770,7 @@ function SettleLiveBetModal({ liveBet, onClose }) {
 function ManageDuels() {
   const [duels, setDuels] = useState([]);
   const [settling, setSettling] = useState(null);
+  const [busy, setBusy] = useState(null);
 
   useEffect(() => {
     const q = query(collection(db, 'duels'), orderBy('createdAt', 'desc'));
@@ -689,6 +779,51 @@ function ManageDuels() {
     });
     return () => unsub();
   }, []);
+
+  // Cancel open duel - refund challenger only (no opponent yet)
+  const cancelOpen = async (duel) => {
+    if (!confirm('לבטל את הדו-קרב? הנקודות יוחזרו למזמין')) return;
+    setBusy(duel.id);
+    try {
+      await runTransaction(db, async (tx) => {
+        const userRef = doc(db, 'users', duel.challengerId);
+        const u = await tx.get(userRef);
+        tx.update(userRef, { balance: (u.data().balance || 0) + duel.stake });
+        tx.delete(doc(db, 'duels', duel.id));
+      });
+    } catch (e) {
+      alert('שגיאה: ' + e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Cancel accepted duel - refund both players
+  const cancelAccepted = async (duel) => {
+    if (!confirm(`לבטל את הדו-קרב המתקיים?\n${duel.stake} נק׳ יוחזרו ל${duel.challengerName} ול-${duel.opponentName}.`)) return;
+    setBusy(duel.id);
+    try {
+      await runTransaction(db, async (tx) => {
+        const challengerRef = doc(db, 'users', duel.challengerId);
+        const opponentRef = doc(db, 'users', duel.opponentId);
+        const c = await tx.get(challengerRef);
+        const o = await tx.get(opponentRef);
+        tx.update(challengerRef, { balance: (c.data().balance || 0) + duel.stake });
+        tx.update(opponentRef, { balance: (o.data().balance || 0) + duel.stake });
+        tx.delete(doc(db, 'duels', duel.id));
+      });
+    } catch (e) {
+      alert('שגיאה: ' + e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Delete settled duel from list (no refunds - already done)
+  const deleteSettled = async (duel) => {
+    if (!confirm('להסיר את הדו-קרב מהרשימה? (הנקודות לא ישתנו)')) return;
+    await deleteDoc(doc(db, 'duels', duel.id));
+  };
 
   return (
     <>
@@ -702,19 +837,23 @@ function ManageDuels() {
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
             סטטוס: {duel.status === 'open' ? '🟢 פתוח' : duel.status === 'accepted' ? '🟡 ממתין להכרעה' : '🔴 הוכרע'}
           </div>
-          {duel.status === 'accepted' && (
-            <button className="btn-sm btn-gold" onClick={() => setSettling(duel)}>הכרע מנצח</button>
-          )}
           {duel.status === 'open' && (
-            <button className="btn-sm btn-danger" onClick={async () => {
-              if (!confirm('לבטל את הדו-קרב? הנקודות יוחזרו למזמין')) return;
-              await runTransaction(db, async (tx) => {
-                const userRef = doc(db, 'users', duel.challengerId);
-                const u = await tx.get(userRef);
-                tx.update(userRef, { balance: (u.data().balance || 0) + duel.stake });
-                tx.delete(doc(db, 'duels', duel.id));
-              });
-            }}>בטל</button>
+            <button className="btn-sm btn-danger" onClick={() => cancelOpen(duel)} disabled={busy === duel.id}>
+              {busy === duel.id ? '…' : '❌ בטל'}
+            </button>
+          )}
+          {duel.status === 'accepted' && (
+            <div className="row-2">
+              <button className="btn-sm btn-gold" onClick={() => setSettling(duel)} disabled={busy === duel.id}>הכרע מנצח</button>
+              <button className="btn-sm btn-danger" onClick={() => cancelAccepted(duel)} disabled={busy === duel.id}>
+                {busy === duel.id ? '…' : '❌ בטל והחזר נק׳'}
+              </button>
+            </div>
+          )}
+          {duel.status === 'settled' && (
+            <button className="btn-sm btn-secondary" onClick={() => deleteSettled(duel)}>
+              🗑️ הסר מהרשימה
+            </button>
           )}
         </div>
       ))}
@@ -795,7 +934,10 @@ function SettleDuelModal({ duel, onClose }) {
 
 // =================== USERS ===================
 function ManageUsers() {
+  const { profile: adminProfile } = useAuth();
   const [users, setUsers] = useState([]);
+  const [adjusting, setAdjusting] = useState(null);
+  const [viewingLog, setViewingLog] = useState(null);
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'users'), (snap) => {
@@ -811,9 +953,10 @@ function ManageUsers() {
 
   return (
     <>
+      <p className="section-subtitle">לחץ "התאם נקודות" כדי לשנות balance/matchPoints/livePoints/duelPoints של משתמש</p>
       {users.map((u) => (
         <div key={u.id} className="admin-card">
-          <div className="flex-between">
+          <div className="flex-between" style={{ marginBottom: 10 }}>
             <div>
               <strong>{u.displayName}</strong>
               {u.isAdmin && <span className="admin-badge" style={{ marginRight: 8 }}>אדמין</span>}
@@ -826,8 +969,203 @@ function ManageUsers() {
               {u.isAdmin ? 'בטל אדמין' : 'הפוך לאדמין'}
             </button>
           </div>
+          <div className="row-2">
+            <button className="btn-sm btn-gold" onClick={() => setAdjusting(u)}>
+              ⚙️ התאם נקודות
+            </button>
+            <button className="btn-sm btn-ghost" onClick={() => setViewingLog(u)}>
+              📜 היסטוריית התאמות
+            </button>
+          </div>
         </div>
       ))}
+
+      {adjusting && (
+        <AdjustPointsModal
+          user={adjusting}
+          adminProfile={adminProfile}
+          onClose={() => setAdjusting(null)}
+        />
+      )}
+      {viewingLog && (
+        <AdjustmentLogModal user={viewingLog} onClose={() => setViewingLog(null)} />
+      )}
     </>
+  );
+}
+
+function AdjustPointsModal({ user, adminProfile, onClose }) {
+  const [field, setField] = useState('balance');
+  const [delta, setDelta] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const fields = [
+    { key: 'balance', label: '💰 מאזן זמין', current: user.balance || 0 },
+    { key: 'matchPoints', label: '⚽ נקודות משחקים', current: user.matchPoints || 0 },
+    { key: 'livePoints', label: '🔥 נקודות לייב', current: user.livePoints || 0 },
+    { key: 'duelPoints', label: '⚔️ נקודות דו-קרב', current: user.duelPoints || 0 },
+  ];
+
+  const currentField = fields.find((f) => f.key === field);
+  const deltaNum = parseInt(delta, 10);
+  const newValue = !Number.isNaN(deltaNum) ? currentField.current + deltaNum : currentField.current;
+
+  const submit = async () => {
+    setErr('');
+    if (Number.isNaN(deltaNum) || deltaNum === 0) {
+      setErr('הכנס סכום שינוי (חיובי או שלילי)');
+      return;
+    }
+    if (!reason.trim()) {
+      setErr('סיבה חובה למעקב');
+      return;
+    }
+    if (field === 'balance' && newValue < 0) {
+      setErr('המאזן לא יכול להיות שלילי');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      // 1. Update user value
+      await updateDoc(doc(db, 'users', user.uid), {
+        [field]: newValue,
+      });
+      // 2. Log the adjustment
+      await addDoc(collection(db, 'users', user.uid, 'adjustments'), {
+        field,
+        delta: deltaNum,
+        previousValue: currentField.current,
+        newValue,
+        reason: reason.trim(),
+        adminId: adminProfile?.uid,
+        adminName: adminProfile?.displayName,
+        createdAt: serverTimestamp(),
+      });
+      onClose();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <button className="modal-close" onClick={onClose}>✕</button>
+        <h3 className="modal-title">⚙️ התאם נקודות</h3>
+        <p style={{ marginBottom: 16, color: 'var(--text-dim)' }}>
+          משתמש: <strong>{user.displayName}</strong>
+        </p>
+
+        {err && <div className="error-msg">{err}</div>}
+
+        <div className="field">
+          <label>איזה ערך לשנות?</label>
+          <select value={field} onChange={(e) => setField(e.target.value)}>
+            {fields.map((f) => (
+              <option key={f.key} value={f.key}>{f.label} (כרגע: {f.current})</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="field">
+          <label>שינוי (חיובי = הוסף, שלילי = הורד)</label>
+          <input
+            type="number"
+            value={delta}
+            onChange={(e) => setDelta(e.target.value)}
+            placeholder="לדוגמה: 10 או -5"
+          />
+          {!Number.isNaN(deltaNum) && deltaNum !== 0 && (
+            <div style={{ fontSize: 13, marginTop: 8, padding: 8, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+              {currentField.current} {deltaNum >= 0 ? '+' : ''}{deltaNum} = <strong style={{ color: 'var(--gold)' }}>{newValue}</strong>
+            </div>
+          )}
+        </div>
+
+        <div className="field">
+          <label>סיבה (חובה - לתיעוד)</label>
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="לדוגמה: 'תיקון לאחר ביטול הימור', 'בונוס יום הולדת'"
+            rows="2"
+          />
+        </div>
+
+        <button className="btn btn-gold" onClick={submit} disabled={busy}>
+          {busy ? 'משנה…' : '✓ אישור התאמה'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AdjustmentLogModal({ user, onClose }) {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const q = query(collection(db, 'users', user.uid, 'adjustments'), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setLogs(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, [user.uid]);
+
+  const fieldLabel = (f) => ({
+    balance: '💰 מאזן',
+    matchPoints: '⚽ משחקים',
+    livePoints: '🔥 לייב',
+    duelPoints: '⚔️ דו-קרב',
+  }[f] || f);
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <button className="modal-close" onClick={onClose}>✕</button>
+        <h3 className="modal-title">📜 היסטוריית התאמות</h3>
+        <p style={{ marginBottom: 16, color: 'var(--text-dim)' }}>
+          משתמש: <strong>{user.displayName}</strong>
+        </p>
+
+        {loading ? (
+          <div className="loading"><div className="spinner" /></div>
+        ) : logs.length === 0 ? (
+          <div className="empty">
+            <div className="empty-icon">📭</div>
+            <p>אין עדיין התאמות ידניות</p>
+          </div>
+        ) : (
+          logs.map((log) => (
+            <div key={log.id} style={{
+              padding: 10,
+              background: 'var(--surface-2)',
+              borderRadius: 'var(--radius-sm)',
+              marginBottom: 8,
+              fontSize: 13,
+            }}>
+              <div className="flex-between" style={{ marginBottom: 4 }}>
+                <strong>{fieldLabel(log.field)}</strong>
+                <span className={`points-badge ${log.delta >= 0 ? 'win' : 'loss'}`}>
+                  {log.delta >= 0 ? '+' : ''}{log.delta}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+                {log.previousValue} → {log.newValue} · {formatDateTime(log.createdAt)} · ע"י {log.adminName}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4, paddingTop: 4, borderTop: '1px solid var(--border)' }}>
+                <strong>סיבה:</strong> {log.reason}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
   );
 }
