@@ -3,7 +3,6 @@ import {
   collection,
   onSnapshot,
   query,
-  orderBy,
   where,
   collectionGroup,
 } from 'firebase/firestore';
@@ -19,14 +18,23 @@ export default function LivePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Listen to live matches
+    // Listen to live matches (no orderBy on server - avoids needing composite index)
     const q = query(
       collection(db, 'matches'),
-      where('status', '==', 'live'),
-      orderBy('kickoffAt', 'asc')
+      where('status', '==', 'live')
     );
     const u1 = onSnapshot(q, (snap) => {
-      setMatches(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const arr = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      // Sort by kickoffAt client-side
+      arr.sort((a, b) => {
+        const ma = a.kickoffAt?.toMillis ? a.kickoffAt.toMillis() : 0;
+        const mb = b.kickoffAt?.toMillis ? b.kickoffAt.toMillis() : 0;
+        return ma - mb;
+      });
+      setMatches(arr);
+      setLoading(false);
+    }, (err) => {
+      console.error('Live matches listen error:', err);
       setLoading(false);
     });
     const u2 = onSnapshot(collection(db, 'users'), (snap) => {
@@ -38,6 +46,8 @@ export default function LivePage() {
         userId: d.ref.parent.parent.id,
         ...d.data(),
       })));
+    }, (err) => {
+      console.error('Bets collection group listen error:', err);
     });
     return () => { u1(); u2(); u3(); };
   }, []);
