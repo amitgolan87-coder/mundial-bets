@@ -9,11 +9,45 @@ import {
   runTransaction,
   serverTimestamp,
   where,
+  getDocs,
+  Timestamp,
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime } from '../utils/scoring';
 import MatchPicker from '../components/MatchPicker';
+
+// Check if two users already have a duel between them today.
+// Returns the existing duel (or null). Today = same calendar day, by createdAt.
+async function findTodayDuelBetween(uidA, uidB) {
+  // Get start of today in local time
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startMs = startOfDay.getTime();
+
+  // Query all duels where uidA is involved AND created today.
+  // We can't query both challengerId/opponentId with OR in Firestore,
+  // so we query duels involving uidA two ways and combine.
+  const q1 = query(
+    collection(db, 'duels'),
+    where('challengerId', '==', uidA),
+    where('createdAt', '>=', Timestamp.fromMillis(startMs))
+  );
+  const q2 = query(
+    collection(db, 'duels'),
+    where('opponentId', '==', uidA),
+    where('createdAt', '>=', Timestamp.fromMillis(startMs))
+  );
+
+  const [snap1, snap2] = await Promise.all([getDocs(q1), getDocs(q2)]);
+
+  for (const docSnap of [...snap1.docs, ...snap2.docs]) {
+    const d = docSnap.data();
+    const otherSide = d.challengerId === uidA ? d.opponentId : d.challengerId;
+    if (otherSide === uidB) return { id: docSnap.id, ...d };
+  }
+  return null;
+}
 
 export default function DuelsPage() {
   const { user, profile } = useAuth();
@@ -108,6 +142,12 @@ function DuelCard({ duel, uid, balance }) {
     setBusy(true);
     setMsg('');
     try {
+      // Check daily limit BEFORE transaction
+      const existing = await findTodayDuelBetween(duel.challengerId, uid);
+      if (existing) {
+        throw new Error(`כבר קיים דו-קרב היום בינך ובין ${duel.challengerName}`);
+      }
+
       await runTransaction(db, async (tx) => {
         const duelRef = doc(db, 'duels', duel.id);
         const dSnap = await tx.get(duelRef);
@@ -278,6 +318,7 @@ function CreateDuelModal({ onClose, uid, balance, displayName }) {
     if (!claim.trim()) { setErr('תכתוב על מה ההימור'); return; }
     const stake = parseInt(stakeStr, 10);
     if (Number.isNaN(stake) || stake <= 0) { setErr('סכום לא תקין'); return; }
+    if (stake > 5) { setErr('הימור דו-קרב מוגבל למקסימום 5 נקודות'); return; }
     if (stake > balance) { setErr('אין מספיק נקודות'); return; }
 
     setBusy(true);
@@ -331,16 +372,19 @@ function CreateDuelModal({ onClose, uid, balance, displayName }) {
         </div>
 
         <div className="field">
-          <label>כמה נקודות אתה מסכן (יש לך {balance})</label>
+          <label>כמה נקודות אתה מסכן (מקסימום 5, יש לך {balance})</label>
           <input
             type="number"
             inputMode="numeric"
             value={stakeStr}
             onChange={(e) => setStakeStr(e.target.value)}
-            placeholder="לדוגמה: 5"
+            placeholder="1-5"
             min="1"
-            max={balance}
+            max={Math.min(5, balance)}
           />
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+            ℹ️ דו-קרב מוגבל ל-5 נקודות לסיבוב כדי לשמור על האיזון
+          </div>
         </div>
 
         <div className="field">

@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { db } from './firebase/config';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import AuthScreen from './pages/AuthScreen';
 import MatchesPage from './pages/MatchesPage';
@@ -9,17 +11,29 @@ import ProfilePage from './pages/ProfilePage';
 import AdminPage from './pages/AdminPage';
 import TransparencyPage from './pages/TransparencyPage';
 import PendingApprovalScreen from './pages/PendingApprovalScreen';
+import LivePage from './pages/LivePage';
 import { useNotifications, markTabSeen } from './hooks/useNotifications';
 
 function Inner() {
   const { user, profile, loading } = useAuth();
   const [tab, setTab] = useState('matches');
+  const [liveCount, setLiveCount] = useState(0);
   const notifs = useNotifications(user?.uid);
+
+  // Subscribe to live matches count (for the LIVE tab badge)
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'matches'), where('status', '==', 'live'));
+    const unsub = onSnapshot(q, (snap) => {
+      setLiveCount(snap.size);
+    });
+    return () => unsub();
+  }, [user]);
 
   // When user switches to a tab, mark it as seen
   useEffect(() => {
     if (!user) return;
-    if (tab === 'live') markTabSeen(user.uid, 'live');
+    if (tab === 'livebets') markTabSeen(user.uid, 'live');
     if (tab === 'duels') markTabSeen(user.uid, 'duels');
   }, [tab, user]);
 
@@ -31,14 +45,14 @@ function Inner() {
     return <AuthScreen />;
   }
 
-  // Admins always have access. Non-admins must have status === 'approved'.
   if (!profile.isAdmin && profile.status !== 'approved') {
     return <PendingApprovalScreen />;
   }
 
   const tabs = [
     { id: 'matches', label: 'משחקים', icon: '⚽' },
-    { id: 'live', label: 'לייב', icon: '🔥', badge: notifs.live },
+    { id: 'live', label: 'LIVE', icon: '🔴', liveBadge: liveCount },
+    { id: 'livebets', label: 'הימורי לייב', icon: '🔥', badge: notifs.live },
     { id: 'duels', label: 'דו-קרב', icon: '⚔️', badge: notifs.duels },
     { id: 'leaderboard', label: 'טבלאות', icon: '🏆' },
     { id: 'transparency', label: 'תזוזה', icon: '🔍' },
@@ -63,7 +77,8 @@ function Inner() {
 
       <main style={{ paddingTop: 16 }}>
         {tab === 'matches' && <MatchesPage />}
-        {tab === 'live' && <LiveBetsPage />}
+        {tab === 'live' && <LivePage />}
+        {tab === 'livebets' && <LiveBetsPage />}
         {tab === 'duels' && <DuelsPage />}
         {tab === 'leaderboard' && <LeaderboardPage />}
         {tab === 'transparency' && <TransparencyPage />}
@@ -83,6 +98,9 @@ function Inner() {
             <span>{t.label}</span>
             {t.badge > 0 && (
               <span className="notif-badge">{t.badge > 9 ? '9+' : t.badge}</span>
+            )}
+            {t.liveBadge > 0 && (
+              <span className="live-badge">{t.liveBadge}</span>
             )}
           </button>
         ))}

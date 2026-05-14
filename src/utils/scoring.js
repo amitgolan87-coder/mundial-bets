@@ -35,16 +35,23 @@ export function calculateMatchPoints(prediction, actualResult, odds) {
 
 /**
  * Returns true if the match betting window is still open.
- * Match locks `hoursBefore` hours before kickoff.
+ * Match locks `hoursBefore` hours before kickoff, OR when status becomes 'live' or 'finished'.
  */
 export function isMatchOpen(match, hoursBefore = 24) {
   if (!match.kickoffAt) return false;
-  if (match.status === 'finished') return false;
+  if (match.status === 'finished' || match.status === 'live') return false;
   const kickoff = match.kickoffAt.toMillis
     ? match.kickoffAt.toMillis()
     : new Date(match.kickoffAt).getTime();
   const lockTime = kickoff - hoursBefore * 60 * 60 * 1000;
   return Date.now() < lockTime;
+}
+
+/**
+ * Returns true if match is currently being played (has a live score, not finished).
+ */
+export function isMatchLive(match) {
+  return match.status === 'live' && match.result != null;
 }
 
 export function formatDateTime(ts) {

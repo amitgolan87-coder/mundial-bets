@@ -67,6 +67,7 @@ function ManageMatches() {
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState(null);
   const [settling, setSettling] = useState(null);
+  const [liveUpdating, setLiveUpdating] = useState(null);
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState('');
 
@@ -171,27 +172,49 @@ function ManageMatches() {
         <div key={m.id} className="admin-card">
           <div className="flex-between" style={{ marginBottom: 8 }}>
             <strong>{m.homeFlag} {m.homeName} vs {m.awayName} {m.awayFlag}</strong>
-            <span className={`match-status ${m.status === 'finished' ? 'finished' : 'open'}`}>
-              {m.status === 'finished' ? 'הסתיים' : 'פעיל'}
+            <span className={`match-status ${m.status === 'finished' ? 'finished' : m.status === 'live' ? 'open' : 'open'}`}
+                  style={m.status === 'live' ? { background: 'rgba(239, 68, 68, 0.2)', color: '#fca5a5' } : {}}>
+              {m.status === 'finished' ? 'הסתיים' : m.status === 'live' ? '🔴 LIVE' : 'פעיל'}
             </span>
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 8 }}>
             {formatDateTime(m.kickoffAt)} · יחס {m.odds?.home}-{m.odds?.draw}-{m.odds?.away}
             {m.result && <span> · תוצאה: {m.result.home}-{m.result.away}</span>}
           </div>
-          <div className="row-3">
-            <button className="btn-sm btn-secondary" onClick={() => setEditing(m)}>ערוך</button>
-            <button className="btn-sm btn-gold" onClick={() => setSettling(m)}>קבע תוצאה</button>
-            <button className="btn-sm btn-danger" onClick={async () => {
-              if (confirm('למחוק את המשחק?')) await deleteDoc(doc(db, 'matches', m.id));
-            }}>מחק</button>
-          </div>
+          {m.status !== 'finished' ? (
+            <>
+              <div className="row-2" style={{ marginBottom: 8 }}>
+                <button className="btn-sm btn-secondary" onClick={() => setEditing(m)}>ערוך פרטים</button>
+                <button className="btn-sm btn-secondary"
+                        onClick={() => setLiveUpdating(m)}
+                        style={m.status === 'live' ? { background: 'rgba(239, 68, 68, 0.2)', color: '#fca5a5', borderColor: '#ef4444' } : {}}>
+                  {m.status === 'live' ? '🔴 עדכן LIVE' : '▶️ התחל LIVE'}
+                </button>
+              </div>
+              <div className="row-2">
+                <button className="btn-sm btn-gold" onClick={() => setSettling(m)}>✓ סיים וחלק נקודות</button>
+                <button className="btn-sm btn-danger" onClick={async () => {
+                  if (confirm('למחוק את המשחק?')) await deleteDoc(doc(db, 'matches', m.id));
+                }}>🗑️</button>
+              </div>
+            </>
+          ) : (
+            <div className="row-2">
+              <button className="btn-sm btn-secondary" onClick={() => setEditing(m)}>ערוך</button>
+              <button className="btn-sm btn-danger" onClick={async () => {
+                if (confirm('למחוק את המשחק? הניקוד שניתן כבר לא יבוטל - להתאמת ניקוד השתמש בניהול משתמשים.')) {
+                  await deleteDoc(doc(db, 'matches', m.id));
+                }
+              }}>🗑️ מחק</button>
+            </div>
+          )}
         </div>
       ))}
 
       {showAdd && <MatchFormModal onClose={() => setShowAdd(false)} />}
       {editing && <MatchFormModal match={editing} onClose={() => setEditing(null)} />}
       {settling && <SettleMatchModal match={settling} onClose={() => setSettling(null)} />}
+      {liveUpdating && <LiveScoreModal match={liveUpdating} onClose={() => setLiveUpdating(null)} />}
     </>
   );
 }
@@ -441,6 +464,116 @@ function SettleMatchModal({ match, onClose }) {
         <button className="btn" onClick={settle} disabled={busy}>
           {busy ? 'מסכם…' : '✓ סגור משחק וחשב נקודות'}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// LiveScoreModal: Sets/updates a live score without finalizing the match.
+// Used while a match is in progress so players can see projected points.
+function LiveScoreModal({ match, onClose }) {
+  const [home, setHome] = useState(match.result?.home ?? 0);
+  const [away, setAway] = useState(match.result?.away ?? 0);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const update = async (newHome, newAway) => {
+    const h = parseInt(newHome, 10);
+    const a = parseInt(newAway, 10);
+    if (Number.isNaN(h) || Number.isNaN(a) || h < 0 || a < 0) {
+      setErr('תוצאה לא תקינה');
+      return;
+    }
+    setBusy(true);
+    setErr('');
+    try {
+      await updateDoc(doc(db, 'matches', match.id), {
+        result: { home: h, away: a },
+        status: 'live',
+        liveUpdatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stopLive = async () => {
+    if (!confirm('להפסיק את שידור ה-LIVE? התוצאה תישאר אבל המשחק יחזור למצב "פעיל" (כאילו לא התחיל). לא יחושבו נקודות.')) return;
+    setBusy(true);
+    try {
+      await updateDoc(doc(db, 'matches', match.id), {
+        status: 'scheduled',
+        result: null,
+      });
+      onClose();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const adjustScore = (which, delta) => {
+    const newHome = which === 'home' ? Math.max(0, home + delta) : home;
+    const newAway = which === 'away' ? Math.max(0, away + delta) : away;
+    setHome(newHome);
+    setAway(newAway);
+    update(newHome, newAway);
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <button className="modal-close" onClick={onClose}>✕</button>
+        <h3 className="modal-title">🔴 תוצאה חיה</h3>
+        <p style={{ marginBottom: 16, color: 'var(--text-dim)' }}>
+          {match.homeFlag} {match.homeName} vs {match.awayName} {match.awayFlag}
+        </p>
+        {err && <div className="error-msg">{err}</div>}
+
+        {/* Quick score buttons */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>{match.homeFlag} {match.homeName}</div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+              <button className="btn-sm btn-secondary" onClick={() => adjustScore('home', -1)} disabled={busy || home <= 0} style={{ width: 40, fontSize: 20, padding: 8 }}>−</button>
+              <div style={{ fontFamily: 'Frank Ruhl Libre, serif', fontSize: 48, fontWeight: 900, color: 'var(--gold)', minWidth: 60 }}>{home}</div>
+              <button className="btn-sm btn-gold" onClick={() => adjustScore('home', 1)} disabled={busy} style={{ width: 40, fontSize: 20, padding: 8 }}>+</button>
+            </div>
+          </div>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>{match.awayName} {match.awayFlag}</div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+              <button className="btn-sm btn-secondary" onClick={() => adjustScore('away', -1)} disabled={busy || away <= 0} style={{ width: 40, fontSize: 20, padding: 8 }}>−</button>
+              <div style={{ fontFamily: 'Frank Ruhl Libre, serif', fontSize: 48, fontWeight: 900, color: 'var(--gold)', minWidth: 60 }}>{away}</div>
+              <button className="btn-sm btn-gold" onClick={() => adjustScore('away', 1)} disabled={busy} style={{ width: 40, fontSize: 20, padding: 8 }}>+</button>
+            </div>
+          </div>
+        </div>
+
+        <div style={{
+          background: 'rgba(239, 68, 68, 0.1)',
+          border: '1px solid rgba(239, 68, 68, 0.3)',
+          borderRadius: 'var(--radius-sm)',
+          padding: 12,
+          marginBottom: 12,
+          fontSize: 13,
+          color: '#fca5a5',
+        }}>
+          🔴 משחק במצב LIVE. כל השחקנים רואים את הצפי שלהם בלשונית "🔴 LIVE".
+          לא יחושבו נקודות עד לחיצה על "סיים וחלק נקודות" במסך הקודם.
+        </div>
+
+        <div className="row-2">
+          <button className="btn btn-secondary" onClick={stopLive} disabled={busy}>
+            הפסק LIVE
+          </button>
+          <button className="btn btn-gold" onClick={onClose}>
+            ✓ סיים עריכה
+          </button>
+        </div>
       </div>
     </div>
   );
