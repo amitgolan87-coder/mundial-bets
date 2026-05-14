@@ -19,6 +19,8 @@ import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { MATCH_POINT_TOTAL, pickRandomRealisticScore } from '../utils/constants';
 import { calculateMatchPoints, formatDateTime } from '../utils/scoring';
+import { TEAMS, TEAMS_LIST, getTeam } from '../utils/teams';
+import { WC_2026_MATCHES } from '../utils/schedule';
 
 export default function AdminPage() {
   const { profile } = useAuth();
@@ -63,6 +65,8 @@ function ManageMatches() {
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState(null);
   const [settling, setSettling] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState('');
 
   useEffect(() => {
     const q = query(collection(db, 'matches'), orderBy('kickoffAt', 'asc'));
@@ -72,11 +76,94 @@ function ManageMatches() {
     return () => unsub();
   }, []);
 
+  const importSchedule = async () => {
+    if (!confirm(`ייובאו ${WC_2026_MATCHES.length} משחקים. ההגרלות הקיימות יישארו.\nלהמשיך?`)) return;
+    setImporting(true);
+    setImportMsg('');
+    try {
+      const batch = writeBatch(db);
+      let count = 0;
+      for (const m of WC_2026_MATCHES) {
+        const homeInfo = getTeam(m.home);
+        const awayInfo = getTeam(m.away);
+        const kickoffDate = new Date(m.kickoff + ':00+03:00'); // Israel time
+        const ref = doc(collection(db, 'matches'));
+        batch.set(ref, {
+          homeName: m.home === 'TBD' ? 'יקבע' : homeInfo.he,
+          awayName: m.away === 'TBD' ? 'יקבע' : awayInfo.he,
+          homeKey: m.home, // english key for lookup later
+          awayKey: m.away,
+          homeFlag: m.home === 'TBD' ? '⏳' : homeInfo.flag,
+          awayFlag: m.away === 'TBD' ? '⏳' : awayInfo.flag,
+          kickoffAt: kickoffDate,
+          stage: m.stage,
+          group: m.home !== 'TBD' ? homeInfo.group : '',
+          placeholder: m.placeholder || null,
+          odds: { home: 5, draw: 5, away: 5 }, // default - admin must edit
+          status: 'scheduled',
+          createdAt: serverTimestamp(),
+        });
+        count++;
+      }
+      await batch.commit();
+      setImportMsg(`✓ ${count} משחקים יובאו בהצלחה!`);
+      setTimeout(() => setImportMsg(''), 4000);
+    } catch (e) {
+      setImportMsg('שגיאה: ' + e.message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const clearAll = async () => {
+    if (!confirm('⚠️ פעולה זו תמחק את כל המשחקים. להמשיך?')) return;
+    if (!confirm('בטוח? לא ניתן לשחזר.')) return;
+    setImporting(true);
+    try {
+      const snap = await getDocs(collection(db, 'matches'));
+      const batch = writeBatch(db);
+      snap.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+      setImportMsg('✓ כל המשחקים נמחקו');
+    } catch (e) {
+      setImportMsg('שגיאה: ' + e.message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <>
-      <button className="btn btn-gold" onClick={() => setShowAdd(true)} style={{ marginBottom: 16 }}>
-        + הוסף משחק
-      </button>
+      {matches.length === 0 && (
+        <div className="admin-card" style={{ background: 'linear-gradient(135deg, var(--surface) 0%, rgba(255,107,26,0.1) 100%)', borderColor: 'var(--flame)' }}>
+          <h4 style={{ marginBottom: 8, fontFamily: 'Frank Ruhl Libre, serif', fontSize: 18 }}>🚀 התחל עם לוח המונדיאל המלא</h4>
+          <p style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 12 }}>
+            ייבא בלחיצה אחת את כל {WC_2026_MATCHES.length} המשחקים (שלב הבתים + נוק-אאוט). תוכל לערוך יחסים ולמלא קבוצות נוק-אאוט אחר כך.
+          </p>
+          <button className="btn btn-gold" onClick={importSchedule} disabled={importing}>
+            {importing ? 'מייבא…' : '📥 ייבא לוח מונדיאל מלא'}
+          </button>
+        </div>
+      )}
+
+      <div className="row-2" style={{ marginBottom: 16 }}>
+        <button className="btn btn-gold" onClick={() => setShowAdd(true)}>+ הוסף משחק</button>
+        {matches.length > 0 && (
+          <button className="btn btn-secondary" onClick={importSchedule} disabled={importing}>
+            {importing ? '…' : '📥 ייבא שוב'}
+          </button>
+        )}
+      </div>
+
+      {matches.length > 0 && (
+        <button className="btn-sm btn-danger" onClick={clearAll} disabled={importing} style={{ marginBottom: 16 }}>
+          🗑️ מחק את כל המשחקים
+        </button>
+      )}
+
+      {importMsg && (
+        <div className={importMsg.includes('✓') ? 'success-msg' : 'error-msg'}>{importMsg}</div>
+      )}
 
       {matches.map((m) => (
         <div key={m.id} className="admin-card">
@@ -109,13 +196,19 @@ function ManageMatches() {
 
 function MatchFormModal({ match, onClose }) {
   const isEdit = !!match;
-  const [homeName, setHomeName] = useState(match?.homeName || '');
-  const [awayName, setAwayName] = useState(match?.awayName || '');
-  const [homeFlag, setHomeFlag] = useState(match?.homeFlag || '🏳️');
-  const [awayFlag, setAwayFlag] = useState(match?.awayFlag || '🏳️');
+
+  // Find team english keys from existing match (if editing)
+  const findKeyFromHebrew = (he) => {
+    if (!he || he === 'יקבע') return '';
+    const entry = Object.entries(TEAMS).find(([_, t]) => t.he === he);
+    return entry ? entry[0] : '';
+  };
+
+  const [homeKey, setHomeKey] = useState(match?.homeKey || findKeyFromHebrew(match?.homeName) || '');
+  const [awayKey, setAwayKey] = useState(match?.awayKey || findKeyFromHebrew(match?.awayName) || '');
   const [kickoff, setKickoff] = useState(
     match?.kickoffAt
-      ? new Date(match.kickoffAt.toMillis ? match.kickoffAt.toMillis() : match.kickoffAt).toISOString().slice(0, 16)
+      ? toLocalInputValue(match.kickoffAt.toMillis ? match.kickoffAt.toMillis() : match.kickoffAt)
       : ''
   );
   const [stage, setStage] = useState(match?.stage || 'שלב הבתים');
@@ -125,22 +218,37 @@ function MatchFormModal({ match, onClose }) {
   const [oa, setOa] = useState(match?.odds?.away ?? 5);
   const [err, setErr] = useState('');
 
+  const homeInfo = homeKey ? getTeam(homeKey) : null;
+  const awayInfo = awayKey ? getTeam(awayKey) : null;
+
+  // Auto-fill group when both teams are from same group
+  useEffect(() => {
+    if (stage === 'שלב הבתים' && homeInfo && awayInfo && homeInfo.group === awayInfo.group) {
+      setGroup(homeInfo.group);
+    }
+  }, [homeKey, awayKey]);
+
   const total = Number(oh) + Number(od) + Number(oa);
 
   const save = async () => {
     setErr('');
-    if (!homeName || !awayName) { setErr('שמות קבוצות חסרים'); return; }
+    if (!homeKey || !awayKey) { setErr('בחר שתי קבוצות'); return; }
+    if (homeKey === awayKey) { setErr('לא ניתן לבחור אותה קבוצה פעמיים'); return; }
     if (!kickoff) { setErr('תאריך משחק חסר'); return; }
     if (total !== MATCH_POINT_TOTAL) {
       setErr(`סך היחסים חייב להיות ${MATCH_POINT_TOTAL} (כרגע ${total})`);
       return;
     }
     const data = {
-      homeName, awayName,
-      homeFlag: homeFlag || '🏳️',
-      awayFlag: awayFlag || '🏳️',
+      homeName: homeInfo.he,
+      awayName: awayInfo.he,
+      homeKey,
+      awayKey,
+      homeFlag: homeInfo.flag,
+      awayFlag: awayInfo.flag,
       kickoffAt: new Date(kickoff),
-      stage, group,
+      stage,
+      group,
       odds: { home: Number(oh), draw: Number(od), away: Number(oa) },
       status: match?.status || 'scheduled',
     };
@@ -158,36 +266,39 @@ function MatchFormModal({ match, onClose }) {
         <button className="modal-close" onClick={onClose}>✕</button>
         <h3 className="modal-title">{isEdit ? 'ערוך משחק' : 'משחק חדש'}</h3>
         {err && <div className="error-msg">{err}</div>}
-        <div className="row-2">
-          <div className="field">
-            <label>קבוצת בית</label>
-            <input value={homeName} onChange={(e) => setHomeName(e.target.value)} placeholder="ברזיל" />
-          </div>
-          <div className="field">
-            <label>דגל</label>
-            <input value={homeFlag} onChange={(e) => setHomeFlag(e.target.value)} placeholder="🇧🇷" />
-          </div>
-        </div>
-        <div className="row-2">
-          <div className="field">
-            <label>קבוצת חוץ</label>
-            <input value={awayName} onChange={(e) => setAwayName(e.target.value)} placeholder="סעודיה" />
-          </div>
-          <div className="field">
-            <label>דגל</label>
-            <input value={awayFlag} onChange={(e) => setAwayFlag(e.target.value)} placeholder="🇸🇦" />
-          </div>
-        </div>
+
         <div className="field">
-          <label>תאריך ושעת בעיטה ראשונה</label>
+          <label>קבוצת בית {homeInfo && <span style={{ marginRight: 8, fontSize: 22 }}>{homeInfo.flag}</span>}</label>
+          <select value={homeKey} onChange={(e) => setHomeKey(e.target.value)}>
+            <option value="">-- בחר קבוצה --</option>
+            {TEAMS_LIST.map((t) => (
+              <option key={t.name} value={t.name}>{t.flag} {t.he} (בית {t.group})</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="field">
+          <label>קבוצת חוץ {awayInfo && <span style={{ marginRight: 8, fontSize: 22 }}>{awayInfo.flag}</span>}</label>
+          <select value={awayKey} onChange={(e) => setAwayKey(e.target.value)}>
+            <option value="">-- בחר קבוצה --</option>
+            {TEAMS_LIST.map((t) => (
+              <option key={t.name} value={t.name}>{t.flag} {t.he} (בית {t.group})</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="field">
+          <label>תאריך ושעת בעיטה ראשונה (שעון ישראל)</label>
           <input type="datetime-local" value={kickoff} onChange={(e) => setKickoff(e.target.value)} />
         </div>
+
         <div className="row-2">
           <div className="field">
             <label>שלב</label>
             <select value={stage} onChange={(e) => setStage(e.target.value)}>
               <option>שלב הבתים</option>
-              <option>שמינית גמר</option>
+              <option>שמינית גמר (32)</option>
+              <option>שמינית גמר (16)</option>
               <option>רבע גמר</option>
               <option>חצי גמר</option>
               <option>גמר קטן</option>
@@ -195,25 +306,37 @@ function MatchFormModal({ match, onClose }) {
             </select>
           </div>
           <div className="field">
-            <label>בית</label>
+            <label>בית (אוטומטי)</label>
             <input value={group} onChange={(e) => setGroup(e.target.value)} placeholder="A" />
           </div>
         </div>
+
         <div className="field">
           <label>יחסים (סה"כ חייב להיות {MATCH_POINT_TOTAL})</label>
           <div className="row-3">
-            <input type="number" value={oh} onChange={(e) => setOh(e.target.value)} placeholder={homeName || 'בית'} min="1" max="13" />
+            <input type="number" value={oh} onChange={(e) => setOh(e.target.value)}
+              placeholder={homeInfo?.he || 'בית'} min="1" max="13" />
             <input type="number" value={od} onChange={(e) => setOd(e.target.value)} placeholder="תיקו" min="1" max="13" />
-            <input type="number" value={oa} onChange={(e) => setOa(e.target.value)} placeholder={awayName || 'חוץ'} min="1" max="13" />
+            <input type="number" value={oa} onChange={(e) => setOa(e.target.value)}
+              placeholder={awayInfo?.he || 'חוץ'} min="1" max="13" />
           </div>
           <div style={{ fontSize: 12, marginTop: 6, color: total === MATCH_POINT_TOTAL ? 'var(--win)' : 'var(--loss)' }}>
             סה"כ: {total} / {MATCH_POINT_TOTAL}
           </div>
         </div>
+
         <button className="btn" onClick={save}>{isEdit ? 'שמור שינויים' : 'הוסף משחק'}</button>
       </div>
     </div>
   );
+}
+
+// Convert timestamp/date to local datetime-local input format (YYYY-MM-DDTHH:mm)
+// in user's local timezone (which is Israel for our users)
+function toLocalInputValue(input) {
+  const d = new Date(input);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function SettleMatchModal({ match, onClose }) {
