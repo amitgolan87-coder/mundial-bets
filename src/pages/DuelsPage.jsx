@@ -236,7 +236,7 @@ function CreateDuelModal({ onClose, uid, balance, displayName }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
         <h3 className="modal-title">⚔️ דו-קרב חדש</h3>

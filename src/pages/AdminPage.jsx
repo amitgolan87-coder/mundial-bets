@@ -263,7 +263,7 @@ function MatchFormModal({ match, onClose }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
         <h3 className="modal-title">{isEdit ? 'ערוך משחק' : 'משחק חדש'}</h3>
@@ -414,7 +414,7 @@ function SettleMatchModal({ match, onClose }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
         <h3 className="modal-title">קביעת תוצאה</h3>
@@ -536,7 +536,7 @@ function LiveBetFormModal({ onClose }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
         <h3 className="modal-title">הימור לייב חדש</h3>
@@ -656,7 +656,7 @@ function SettleLiveBetModal({ liveBet, onClose }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
         <h3 className="modal-title">הכרעת הימור לייב</h3>
@@ -766,7 +766,7 @@ function SettleDuelModal({ duel, onClose }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
         <h3 className="modal-title">הכרעת דו-קרב</h3>

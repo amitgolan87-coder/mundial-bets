@@ -40,7 +40,7 @@ export default function UserDetailModal({ user, onClose }) {
   const totalPoints = (user.matchPoints || 0) + (user.livePoints || 0) + (user.duelPoints || 0);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
 
