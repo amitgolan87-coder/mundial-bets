@@ -19,9 +19,6 @@ service cloud.firestore {
     }
 
     // === USERS ===
-    // Anyone signed in can read user profile docs (for leaderboard).
-    // Users can update their own profile but cannot grant themselves admin.
-    // Admins can update any user.
     match /users/{uid} {
       allow read: if isSignedIn();
       allow create: if isOwner(uid);
@@ -34,14 +31,9 @@ service cloud.firestore {
       allow delete: if isAdmin();
 
       // === USER'S MATCH BETS ===
-      // Users can write their own bets.
-      // CRITICAL: A user can only READ their own bets OR bets where the
-      // associated match is already locked (within 24h of kickoff) or finished.
-      // This prevents seeing others' predictions before the deadline.
       match /bets/{matchId} {
         allow create, update: if isOwner(uid);
         allow delete: if isAdmin();
-        // Users always see their own bets. Others see bets only after match locks.
         allow read: if isOwner(uid) || isAdmin() || (
           isSignedIn() &&
           exists(/databases/$(database)/documents/matches/$(matchId)) &&
@@ -53,7 +45,6 @@ service cloud.firestore {
       }
 
       // === USER'S LIVE BET ENTRIES ===
-      // Similar to match bets - others can see only after live bet closes.
       match /liveEntries/{liveBetId} {
         allow create, update: if isOwner(uid);
         allow delete: if isAdmin();
@@ -68,8 +59,29 @@ service cloud.firestore {
       }
     }
 
+    // === COLLECTION GROUP QUERIES (for Transparency page) ===
+    // Allow signed-in users to query bets/liveEntries across all users,
+    // BUT only return docs where the related match/liveBet is already locked.
+    // This prevents the transparency page from leaking open predictions.
+    match /{path=**}/bets/{matchId} {
+      allow read: if isSignedIn() &&
+        exists(/databases/$(database)/documents/matches/$(matchId)) &&
+        (
+          get(/databases/$(database)/documents/matches/$(matchId)).data.status == 'finished' ||
+          get(/databases/$(database)/documents/matches/$(matchId)).data.kickoffAt < request.time + duration.value(24, 'h')
+        );
+    }
+
+    match /{path=**}/liveEntries/{liveBetId} {
+      allow read: if isSignedIn() &&
+        exists(/databases/$(database)/documents/liveBets/$(liveBetId)) &&
+        (
+          get(/databases/$(database)/documents/liveBets/$(liveBetId)).data.settled == true ||
+          get(/databases/$(database)/documents/liveBets/$(liveBetId)).data.closesAt < request.time
+        );
+    }
+
     // === MATCHES ===
-    // Everyone signed in can read. Only admins can write.
     match /matches/{matchId} {
       allow read: if isSignedIn();
       allow write: if isAdmin();
@@ -82,10 +94,6 @@ service cloud.firestore {
     }
 
     // === DUELS ===
-    // Everyone signed in can read duels.
-    // Authenticated users can create duels (challenger).
-    // Users can accept (update) an open duel where they are not the challenger.
-    // Admins can settle.
     match /duels/{duelId} {
       allow read: if isSignedIn();
       allow create: if isSignedIn() && request.resource.data.challengerId == request.auth.uid;
