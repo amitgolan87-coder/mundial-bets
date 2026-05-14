@@ -3,7 +3,7 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
+    // ============ HELPER FUNCTIONS ============
     function isSignedIn() {
       return request.auth != null;
     }
@@ -18,24 +18,60 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
     }
 
-    // === USERS ===
+    // Returns true if the requesting user is APPROVED (status == 'approved').
+    // Existing legacy users without a status field default to approved.
+    function isApproved() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        (
+          !('status' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data) ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'approved'
+        );
+    }
+
+    // Admin OR approved player
+    function isActive() {
+      return isAdmin() || isApproved();
+    }
+
+    // ============ USERS ============
     match /users/{uid} {
-      allow read: if isSignedIn();
+      // Read:
+      //   - any signed-in user can read their OWN profile (needed to learn their status).
+      //   - admins can read any user.
+      //   - APPROVED users can read other approved users (for leaderboards).
+      //   - pending/disabled users CANNOT see other users.
+      allow read: if isOwner(uid) || isAdmin() || (
+        isApproved() &&
+        (
+          !('status' in resource.data) ||
+          resource.data.status == 'approved'
+        )
+      );
+
       allow create: if isOwner(uid);
-      allow update: if (isOwner(uid) &&
-                       request.resource.data.isAdmin == resource.data.isAdmin &&
-                       request.resource.data.matchPoints == resource.data.matchPoints &&
-                       request.resource.data.livePoints == resource.data.livePoints &&
-                       request.resource.data.duelPoints == resource.data.duelPoints)
-                    || isAdmin();
+
+      // Update:
+      //   - the user themselves can update non-sensitive fields,
+      //     but cannot change isAdmin, status, or any points.
+      //   - admins can update anything.
+      allow update: if (
+        isOwner(uid) &&
+        request.resource.data.isAdmin == resource.data.isAdmin &&
+        request.resource.data.status == resource.data.status &&
+        request.resource.data.matchPoints == resource.data.matchPoints &&
+        request.resource.data.livePoints == resource.data.livePoints &&
+        request.resource.data.duelPoints == resource.data.duelPoints
+      ) || isAdmin();
+
       allow delete: if isAdmin();
 
-      // === USER'S MATCH BETS ===
+      // ============ USER'S MATCH BETS ============
       match /bets/{matchId} {
-        allow create, update: if isOwner(uid);
+        allow create, update: if isOwner(uid) && isApproved();
         allow delete: if isAdmin();
         allow read: if isOwner(uid) || isAdmin() || (
-          isSignedIn() &&
+          isApproved() &&
           exists(/databases/$(database)/documents/matches/$(matchId)) &&
           (
             get(/databases/$(database)/documents/matches/$(matchId)).data.status == 'finished' ||
@@ -44,12 +80,12 @@ service cloud.firestore {
         );
       }
 
-      // === USER'S LIVE BET ENTRIES ===
+      // ============ USER'S LIVE BET ENTRIES ============
       match /liveEntries/{liveBetId} {
-        allow create, update: if isOwner(uid);
+        allow create, update: if isOwner(uid) && isApproved();
         allow delete: if isAdmin();
         allow read: if isOwner(uid) || isAdmin() || (
-          isSignedIn() &&
+          isApproved() &&
           exists(/databases/$(database)/documents/liveBets/$(liveBetId)) &&
           (
             get(/databases/$(database)/documents/liveBets/$(liveBetId)).data.settled == true ||
@@ -58,22 +94,17 @@ service cloud.firestore {
         );
       }
 
-      // === USER'S ADJUSTMENT LOG ===
-      // Audit log for admin point adjustments. Only admin can write.
-      // User can read their own log; admin can read anyone's.
+      // ============ USER'S ADJUSTMENT LOG ============
       match /adjustments/{adjustmentId} {
         allow read: if isOwner(uid) || isAdmin();
         allow create: if isAdmin();
-        allow update, delete: if false; // immutable audit trail
+        allow update, delete: if false;
       }
     }
 
-    // === COLLECTION GROUP QUERIES (for Transparency page) ===
-    // Allow signed-in users to query bets/liveEntries across all users,
-    // BUT only return docs where the related match/liveBet is already locked.
-    // This prevents the transparency page from leaking open predictions.
+    // ============ COLLECTION GROUP QUERIES (Transparency) ============
     match /{path=**}/bets/{matchId} {
-      allow read: if isSignedIn() &&
+      allow read: if isApproved() &&
         exists(/databases/$(database)/documents/matches/$(matchId)) &&
         (
           get(/databases/$(database)/documents/matches/$(matchId)).data.status == 'finished' ||
@@ -82,7 +113,7 @@ service cloud.firestore {
     }
 
     match /{path=**}/liveEntries/{liveBetId} {
-      allow read: if isSignedIn() &&
+      allow read: if isApproved() &&
         exists(/databases/$(database)/documents/liveBets/$(liveBetId)) &&
         (
           get(/databases/$(database)/documents/liveBets/$(liveBetId)).data.settled == true ||
@@ -90,37 +121,35 @@ service cloud.firestore {
         );
     }
 
-    // === MATCHES ===
+    // ============ MATCHES ============
     match /matches/{matchId} {
-      allow read: if isSignedIn();
+      allow read: if isActive();
       allow write: if isAdmin();
     }
 
-    // === LIVE BETS ===
+    // ============ LIVE BETS ============
     match /liveBets/{liveBetId} {
-      allow read: if isSignedIn();
+      allow read: if isActive();
       allow write: if isAdmin();
     }
 
-    // === DUELS ===
+    // ============ DUELS ============
     match /duels/{duelId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.resource.data.challengerId == request.auth.uid;
+      allow read: if isActive();
+      allow create: if isApproved() && request.resource.data.challengerId == request.auth.uid;
       allow update: if isAdmin() || (
-        isSignedIn() &&
+        isApproved() &&
         resource.data.status == 'open' &&
         resource.data.challengerId != request.auth.uid &&
         request.resource.data.opponentId == request.auth.uid &&
         request.resource.data.status == 'accepted'
       );
-      // Delete: admin, OR challenger when status is open,
-      // OR challenger/opponent when status is accepted (mutual cancel)
       allow delete: if isAdmin() || (
-        isSignedIn() &&
+        isApproved() &&
         resource.data.status == 'open' &&
         resource.data.challengerId == request.auth.uid
       ) || (
-        isSignedIn() &&
+        isApproved() &&
         resource.data.status == 'accepted' &&
         (resource.data.challengerId == request.auth.uid || resource.data.opponentId == request.auth.uid)
       );

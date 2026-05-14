@@ -8,6 +8,7 @@ import LeaderboardPage from './pages/LeaderboardPage';
 import ProfilePage from './pages/ProfilePage';
 import AdminPage from './pages/AdminPage';
 import TransparencyPage from './pages/TransparencyPage';
+import PendingApprovalScreen from './pages/PendingApprovalScreen';
 import { useNotifications, markTabSeen } from './hooks/useNotifications';
 
 function Inner() {
@@ -28,6 +29,11 @@ function Inner() {
 
   if (!user || !profile) {
     return <AuthScreen />;
+  }
+
+  // Admins always have access. Non-admins must have status === 'approved'.
+  if (!profile.isAdmin && profile.status !== 'approved') {
+    return <PendingApprovalScreen />;
   }
 
   const tabs = [

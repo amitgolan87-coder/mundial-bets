@@ -8,7 +8,6 @@ import {
 } from 'firebase/auth';
 import {
   doc,
-  getDoc,
   setDoc,
   onSnapshot,
   serverTimestamp,
@@ -31,11 +30,10 @@ export function AuthProvider({ children }) {
         setLoading(false);
         return;
       }
-      // Listen to profile doc in realtime
       const ref = doc(db, 'users', fbUser.uid);
       const profileUnsub = onSnapshot(ref, async (snap) => {
         if (!snap.exists()) {
-          // Create profile on first login
+          // Profile doesn't exist - create as pending (shouldn't normally happen, signUp creates it)
           await setDoc(ref, {
             uid: fbUser.uid,
             email: fbUser.email,
@@ -45,6 +43,7 @@ export function AuthProvider({ children }) {
             livePoints: 0,
             duelPoints: 0,
             isAdmin: false,
+            status: 'pending',
             createdAt: serverTimestamp(),
           });
         } else {
@@ -69,6 +68,7 @@ export function AuthProvider({ children }) {
       livePoints: 0,
       duelPoints: 0,
       isAdmin: false,
+      status: 'pending', // <- requires admin approval
       createdAt: serverTimestamp(),
     });
     return cred;

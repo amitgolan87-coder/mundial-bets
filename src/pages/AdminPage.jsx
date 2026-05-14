@@ -364,13 +364,16 @@ function SettleMatchModal({ match, onClose }) {
         settledAt: serverTimestamp(),
       });
 
-      // 2. Get all users, generate auto-bets for missing, then calculate points
+      // 2. Get all users, generate auto-bets for missing, then calculate points.
+      // ONLY for approved users - skip pending/disabled.
       const usersSnap = await getDocs(collection(db, 'users'));
       const batch = writeBatch(db);
 
       for (const userDoc of usersSnap.docs) {
         const uid = userDoc.id;
         const userData = userDoc.data();
+        // Skip non-approved users (legacy users without status field are treated as approved)
+        if (userData.status && userData.status !== 'approved') continue;
         const betRef = doc(db, 'users', uid, 'bets', match.id);
         const betSnap = await getDoc(betRef);
 
@@ -938,6 +941,7 @@ function ManageUsers() {
   const [users, setUsers] = useState([]);
   const [adjusting, setAdjusting] = useState(null);
   const [viewingLog, setViewingLog] = useState(null);
+  const [filter, setFilter] = useState('all'); // all | pending | approved | disabled
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'users'), (snap) => {
@@ -951,34 +955,130 @@ function ManageUsers() {
     await updateDoc(doc(db, 'users', u.uid), { isAdmin: !u.isAdmin });
   };
 
+  const setStatus = async (u, newStatus) => {
+    const messages = {
+      approved: `לאשר את ${u.displayName} להשתתפות בתחרות?`,
+      disabled: `להשבית את הגישה של ${u.displayName}? הוא לא יוכל להמשיך להמר עד שתפעיל מחדש.`,
+      pending: `להחזיר את ${u.displayName} למצב 'ממתין לאישור'?`,
+    };
+    if (!confirm(messages[newStatus])) return;
+    await updateDoc(doc(db, 'users', u.uid), { status: newStatus });
+  };
+
+  // Treat missing status (existing pre-feature users) as 'approved' so they don't get locked out
+  const effectiveStatus = (u) => u.status || 'approved';
+
+  const filteredUsers = users.filter((u) => {
+    if (filter === 'all') return true;
+    return effectiveStatus(u) === filter;
+  });
+
+  const pendingCount = users.filter((u) => effectiveStatus(u) === 'pending').length;
+
   return (
     <>
-      <p className="section-subtitle">לחץ "התאם נקודות" כדי לשנות balance/matchPoints/livePoints/duelPoints של משתמש</p>
-      {users.map((u) => (
-        <div key={u.id} className="admin-card">
-          <div className="flex-between" style={{ marginBottom: 10 }}>
-            <div>
-              <strong>{u.displayName}</strong>
-              {u.isAdmin && <span className="admin-badge" style={{ marginRight: 8 }}>אדמין</span>}
-              <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>{u.email}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-                💰 {u.balance || 0} · ⚽ {u.matchPoints || 0} · 🔥 {u.livePoints || 0} · ⚔️ {u.duelPoints || 0}
+      {pendingCount > 0 && (
+        <div className="admin-card" style={{ background: 'linear-gradient(135deg, var(--surface) 0%, rgba(255,107,26,0.15) 100%)', borderColor: 'var(--flame)' }}>
+          <strong>⏳ {pendingCount} משתמשים ממתינים לאישור</strong>
+          <button className="btn-sm btn-gold" style={{ marginTop: 8 }} onClick={() => setFilter('pending')}>
+            הצג ממתינים
+          </button>
+        </div>
+      )}
+
+      <div className="tabs">
+        <button className={`tab-btn ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
+          הכל ({users.length})
+        </button>
+        <button className={`tab-btn ${filter === 'pending' ? 'active' : ''}`} onClick={() => setFilter('pending')}>
+          ממתינים ({pendingCount})
+        </button>
+        <button className={`tab-btn ${filter === 'approved' ? 'active' : ''}`} onClick={() => setFilter('approved')}>
+          מאושרים
+        </button>
+        <button className={`tab-btn ${filter === 'disabled' ? 'active' : ''}`} onClick={() => setFilter('disabled')}>
+          מושבתים
+        </button>
+      </div>
+
+      <p className="section-subtitle">
+        משתמש חדש שנרשם יופיע ב"ממתינים" - אשר אותו כדי שיוכל להשתתף בתחרות
+      </p>
+
+      {filteredUsers.length === 0 ? (
+        <div className="empty">
+          <div className="empty-icon">👥</div>
+          <p>אין משתמשים בקטגוריה הזו</p>
+        </div>
+      ) : filteredUsers.map((u) => {
+        const status = effectiveStatus(u);
+        const statusInfo = {
+          pending: { label: '⏳ ממתין', color: 'var(--gold)' },
+          approved: { label: '✓ מאושר', color: 'var(--win)' },
+          disabled: { label: '🚫 מושבת', color: 'var(--loss)' },
+        }[status];
+
+        return (
+          <div key={u.id} className="admin-card">
+            <div className="flex-between" style={{ marginBottom: 10 }}>
+              <div>
+                <strong>{u.displayName}</strong>
+                {u.isAdmin && <span className="admin-badge" style={{ marginRight: 8 }}>אדמין</span>}
+                <span style={{ fontSize: 11, fontWeight: 700, marginRight: 8, color: statusInfo.color }}>
+                  {statusInfo.label}
+                </span>
+                <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>{u.email}</div>
+                {status === 'approved' && (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                    💰 {u.balance || 0} · ⚽ {u.matchPoints || 0} · 🔥 {u.livePoints || 0} · ⚔️ {u.duelPoints || 0}
+                  </div>
+                )}
               </div>
             </div>
-            <button className="btn-sm btn-secondary" onClick={() => toggleAdmin(u)}>
-              {u.isAdmin ? 'בטל אדמין' : 'הפוך לאדמין'}
-            </button>
+
+            {/* Status control buttons */}
+            {status === 'pending' && (
+              <div className="row-2" style={{ marginBottom: 8 }}>
+                <button className="btn-sm btn-gold" onClick={() => setStatus(u, 'approved')}>
+                  ✓ אשר משתמש
+                </button>
+                <button className="btn-sm btn-danger" onClick={() => setStatus(u, 'disabled')}>
+                  🚫 דחה
+                </button>
+              </div>
+            )}
+            {status === 'approved' && !u.isAdmin && (
+              <button className="btn-sm btn-secondary" style={{ marginBottom: 8 }} onClick={() => setStatus(u, 'disabled')}>
+                🚫 השבת גישה
+              </button>
+            )}
+            {status === 'disabled' && (
+              <button className="btn-sm btn-gold" style={{ marginBottom: 8 }} onClick={() => setStatus(u, 'approved')}>
+                ✓ הפעל מחדש
+              </button>
+            )}
+
+            {/* Admin actions only for approved users */}
+            {status === 'approved' && (
+              <>
+                <div className="row-2" style={{ marginBottom: 8 }}>
+                  <button className="btn-sm btn-secondary" onClick={() => toggleAdmin(u)}>
+                    {u.isAdmin ? 'בטל אדמין' : 'הפוך לאדמין'}
+                  </button>
+                </div>
+                <div className="row-2">
+                  <button className="btn-sm btn-gold" onClick={() => setAdjusting(u)}>
+                    ⚙️ התאם נקודות
+                  </button>
+                  <button className="btn-sm btn-ghost" onClick={() => setViewingLog(u)}>
+                    📜 היסטוריה
+                  </button>
+                </div>
+              </>
+            )}
           </div>
-          <div className="row-2">
-            <button className="btn-sm btn-gold" onClick={() => setAdjusting(u)}>
-              ⚙️ התאם נקודות
-            </button>
-            <button className="btn-sm btn-ghost" onClick={() => setViewingLog(u)}>
-              📜 היסטוריית התאמות
-            </button>
-          </div>
-        </div>
-      ))}
+        );
+      })}
 
       {adjusting && (
         <AdjustPointsModal

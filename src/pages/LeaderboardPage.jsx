@@ -28,10 +28,14 @@ export default function LeaderboardPage() {
   }, []);
 
   const enriched = useMemo(() => {
-    return users.map((u) => ({
-      ...u,
-      totalPoints: (u.matchPoints || 0) + (u.livePoints || 0) + (u.duelPoints || 0),
-    }));
+    // Only show approved players in leaderboards.
+    // Existing users without status field are treated as approved (backward compat).
+    return users
+      .filter((u) => !u.status || u.status === 'approved')
+      .map((u) => ({
+        ...u,
+        totalPoints: (u.matchPoints || 0) + (u.livePoints || 0) + (u.duelPoints || 0),
+      }));
   }, [users]);
 
   const activeField = TABS.find((t) => t.id === tab).field;

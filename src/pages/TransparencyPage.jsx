@@ -108,10 +108,14 @@ function MatchesTransparency() {
     });
   }, [matches, dateFrom, dateTo, teamFilter, stageFilter, statusFilter]);
 
-  // Map of userId -> name for quick lookup
+  // Map of userId -> name for quick lookup (only approved users)
   const userMap = useMemo(() => {
     const m = {};
-    users.forEach((u) => { m[u.uid] = u.displayName; });
+    users.forEach((u) => {
+      if (!u.status || u.status === 'approved') {
+        m[u.uid] = u.displayName;
+      }
+    });
     return m;
   }, [users]);
 
@@ -428,7 +432,11 @@ function LiveTransparency() {
 
   const userMap = useMemo(() => {
     const m = {};
-    users.forEach((u) => { m[u.uid] = u.displayName; });
+    users.forEach((u) => {
+      if (!u.status || u.status === 'approved') {
+        m[u.uid] = u.displayName;
+      }
+    });
     return m;
   }, [users]);
 
@@ -570,7 +578,9 @@ function DuelsTransparency() {
   const userStats = useMemo(() => {
     const stats = {};
     users.forEach((u) => {
-      stats[u.uid] = { uid: u.uid, name: u.displayName, won: 0, lost: 0, points: 0 };
+      if (!u.status || u.status === 'approved') {
+        stats[u.uid] = { uid: u.uid, name: u.displayName, won: 0, lost: 0, points: 0 };
+      }
     });
     duels.forEach((d) => {
       if (d.status !== 'settled') return;
