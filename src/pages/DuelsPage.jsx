@@ -16,6 +16,7 @@ import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime } from '../utils/scoring';
 import MatchPicker from '../components/MatchPicker';
+import RelatedMatches from '../components/RelatedMatches';
 
 // Check if two users already have a duel between them today.
 // Returns the existing duel (or null). Today = same calendar day, by createdAt.
