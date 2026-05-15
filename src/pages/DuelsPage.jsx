@@ -131,9 +131,19 @@ function DuelCard({ duel, uid, balance }) {
   // - Open duel: only challenger can cancel (refund self)
   // - Accepted duel: challenger or opponent can cancel (refund both)
   // - Both block if past deadline
-  const isPastDeadline = duel.deadline
-    ? Date.now() > (duel.deadline.toMillis ? duel.deadline.toMillis() : new Date(duel.deadline).getTime())
-    : false;
+  const isPastDeadline = (() => {
+    if (!duel.deadline) return false;
+    try {
+      const ms = duel.deadline.toMillis
+        ? duel.deadline.toMillis()
+        : (duel.deadline.seconds != null
+          ? duel.deadline.seconds * 1000
+          : new Date(duel.deadline).getTime());
+      return Date.now() > ms;
+    } catch (e) {
+      return false;
+    }
+  })();
 
   const canCancelOpen = duel.status === 'open' && isChallenger && !isPastDeadline;
   const canCancelAccepted = duel.status === 'accepted' && (isChallenger || isOpponent) && !isPastDeadline;

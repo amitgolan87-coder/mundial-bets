@@ -56,24 +56,34 @@ export function isMatchLive(match) {
 
 export function formatDateTime(ts) {
   if (!ts) return '';
-  const d = ts.toDate ? ts.toDate() : new Date(ts);
-  return d.toLocaleString('he-IL', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  try {
+    const d = ts.toDate ? ts.toDate() : new Date(ts);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleString('he-IL', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch (e) {
+    return '';
+  }
 }
 
 export function formatTimeUntil(ts) {
   if (!ts) return '';
-  const d = ts.toDate ? ts.toDate() : new Date(ts);
-  const ms = d.getTime() - Date.now();
-  if (ms <= 0) return 'התחיל';
-  const hours = Math.floor(ms / (60 * 60 * 1000));
-  const days = Math.floor(hours / 24);
-  if (days > 0) return `בעוד ${days} ימים`;
-  if (hours > 0) return `בעוד ${hours} שעות`;
-  const mins = Math.floor(ms / (60 * 1000));
-  return `בעוד ${mins} דקות`;
+  try {
+    const d = ts.toDate ? ts.toDate() : new Date(ts);
+    if (isNaN(d.getTime())) return '';
+    const ms = d.getTime() - Date.now();
+    if (ms <= 0) return 'התחיל';
+    const hours = Math.floor(ms / (60 * 60 * 1000));
+    const days = Math.floor(hours / 24);
+    if (days > 0) return `בעוד ${days} ימים`;
+    if (hours > 0) return `בעוד ${hours} שעות`;
+    const mins = Math.floor(ms / (60 * 1000));
+    return `בעוד ${mins} דקות`;
+  } catch (e) {
+    return '';
+  }
 }

@@ -1,30 +1,59 @@
-import { useEffect, useState } from 'react';
-import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { useEffect, useState, useMemo } from 'react';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase/config';
 
 /**
  * RelatedMatches - shows a compact list of match chips for given match IDs.
- * Used in LiveBet and Duel cards to show what the bet relates to.
+ * Defensive: never crashes on undefined/null/empty matchIds.
  */
-export default function RelatedMatches({ matchIds = [] }) {
+export default function RelatedMatches({ matchIds }) {
+  // Normalize input - never trust it
+  const safeIds = useMemo(() => {
+    if (!Array.isArray(matchIds)) return [];
+    return matchIds.filter((id) => typeof id === 'string' && id.length > 0);
+  }, [matchIds]);
+
+  const idsKey = safeIds.join(',');
+
   const [matches, setMatches] = useState({});
 
   useEffect(() => {
-    if (!matchIds || matchIds.length === 0) return;
-    const q = query(collection(db, 'matches'), orderBy('kickoffAt', 'asc'));
-    const unsub = onSnapshot(q, (snap) => {
-      const map = {};
-      snap.forEach((d) => {
-        if (matchIds.includes(d.id)) map[d.id] = { id: d.id, ...d.data() };
-      });
-      setMatches(map);
+    if (safeIds.length === 0) {
+      setMatches({});
+      return;
+    }
+    // Subscribe to each match individually - cheaper than full collection
+    // and avoids permission/ordering complications.
+    const unsubs = safeIds.map((id) => {
+      try {
+        return onSnapshot(
+          doc(db, 'matches', id),
+          (snap) => {
+            if (!snap.exists()) {
+              setMatches((prev) => {
+                const copy = { ...prev };
+                delete copy[id];
+                return copy;
+              });
+              return;
+            }
+            setMatches((prev) => ({ ...prev, [id]: { id: snap.id, ...snap.data() } }));
+          },
+          (err) => {
+            console.error('RelatedMatches doc listen error:', err);
+          }
+        );
+      } catch (e) {
+        console.error('RelatedMatches subscribe error:', e);
+        return () => {};
+      }
     });
-    return () => unsub();
-  }, [matchIds.join(',')]);
+    return () => unsubs.forEach((u) => u && u());
+  }, [idsKey]);
 
-  if (!matchIds || matchIds.length === 0) return null;
+  if (safeIds.length === 0) return null;
 
-  const matchList = matchIds.map((id) => matches[id]).filter(Boolean);
+  const matchList = safeIds.map((id) => matches[id]).filter(Boolean);
   if (matchList.length === 0) return null;
 
   return (

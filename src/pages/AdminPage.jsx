@@ -970,6 +970,9 @@ function ManageDuels() {
           <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 8 }}>
             {duel.challengerName} (פתח) · {duel.opponentName || 'ממתין ליריב'}  · {duel.stake} נק׳ לכל צד
           </div>
+          {duel.matchIds && duel.matchIds.length > 0 && (
+            <RelatedMatches matchIds={duel.matchIds} />
+          )}
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
             סטטוס: {duel.status === 'open' ? '🟢 פתוח' : duel.status === 'accepted' ? '🟡 ממתין להכרעה' : '🔴 הוכרע'}
           </div>
