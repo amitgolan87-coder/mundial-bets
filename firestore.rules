@@ -100,6 +100,21 @@ service cloud.firestore {
         allow create: if isAdmin();
         allow update, delete: if false;
       }
+
+      // ============ USER'S TOURNAMENT PREDICTIONS ============
+      // Tournament predictions are visible to all approved users after lock-in.
+      match /tournamentPredictions/{tournamentBetId} {
+        allow create, update: if isOwner(uid) && isApproved();
+        allow delete: if isAdmin();
+        allow read: if isOwner(uid) || isAdmin() || (
+          isApproved() &&
+          exists(/databases/$(database)/documents/tournamentBets/$(tournamentBetId)) &&
+          (
+            get(/databases/$(database)/documents/tournamentBets/$(tournamentBetId)).data.settled == true ||
+            get(/databases/$(database)/documents/tournamentBets/$(tournamentBetId)).data.closesAt < request.time
+          )
+        );
+      }
     }
 
     // ============ COLLECTION GROUP QUERIES (Transparency) ============
@@ -131,6 +146,22 @@ service cloud.firestore {
     match /liveBets/{liveBetId} {
       allow read: if isActive();
       allow write: if isAdmin();
+    }
+
+    // ============ TOURNAMENT BETS ============
+    match /tournamentBets/{tournamentBetId} {
+      allow read: if isActive();
+      allow write: if isAdmin();
+    }
+
+    // Tournament predictions collectionGroup (transparency)
+    match /{path=**}/tournamentPredictions/{tournamentBetId} {
+      allow read: if isApproved() &&
+        exists(/databases/$(database)/documents/tournamentBets/$(tournamentBetId)) &&
+        (
+          get(/databases/$(database)/documents/tournamentBets/$(tournamentBetId)).data.settled == true ||
+          get(/databases/$(database)/documents/tournamentBets/$(tournamentBetId)).data.closesAt < request.time
+        );
     }
 
     // ============ DUELS ============

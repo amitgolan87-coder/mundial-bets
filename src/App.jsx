@@ -12,6 +12,7 @@ import AdminPage from './pages/AdminPage';
 import TransparencyPage from './pages/TransparencyPage';
 import PendingApprovalScreen from './pages/PendingApprovalScreen';
 import LivePage from './pages/LivePage';
+import TournamentBetsPage from './pages/TournamentBetsPage';
 import { useNotifications, markTabSeen } from './hooks/useNotifications';
 
 function Inner() {
@@ -54,7 +55,8 @@ function Inner() {
     { id: 'live', label: 'LIVE', icon: '🔴', liveBadge: liveCount },
     { id: 'livebets', label: 'הימורי לייב', icon: '🔥', badge: notifs.live },
     { id: 'duels', label: 'דו-קרב', icon: '⚔️', badge: notifs.duels },
-    { id: 'leaderboard', label: 'טבלאות', icon: '🏆' },
+    { id: 'tournament', label: 'טורניר', icon: '🏆' },
+    { id: 'leaderboard', label: 'טבלאות', icon: '📊' },
     { id: 'transparency', label: 'תזוזה', icon: '🔍' },
     { id: 'profile', label: 'אישי', icon: '👤' },
   ];
@@ -80,6 +82,7 @@ function Inner() {
         {tab === 'live' && <LivePage />}
         {tab === 'livebets' && <LiveBetsPage />}
         {tab === 'duels' && <DuelsPage />}
+        {tab === 'tournament' && <TournamentBetsPage />}
         {tab === 'leaderboard' && <LeaderboardPage />}
         {tab === 'transparency' && <TransparencyPage />}
         {tab === 'profile' && <ProfilePage />}

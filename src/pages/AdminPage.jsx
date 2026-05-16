@@ -50,12 +50,14 @@ export default function AdminPage() {
         <button className={`tab-btn ${section === 'matches' ? 'active' : ''}`} onClick={() => setSection('matches')}>משחקים</button>
         <button className={`tab-btn ${section === 'live' ? 'active' : ''}`} onClick={() => setSection('live')}>הימורי לייב</button>
         <button className={`tab-btn ${section === 'duels' ? 'active' : ''}`} onClick={() => setSection('duels')}>דו-קרבים</button>
+        <button className={`tab-btn ${section === 'tournament' ? 'active' : ''}`} onClick={() => setSection('tournament')}>טורניר</button>
         <button className={`tab-btn ${section === 'users' ? 'active' : ''}`} onClick={() => setSection('users')}>משתמשים</button>
       </div>
 
       {section === 'matches' && <ManageMatches />}
       {section === 'live' && <ManageLiveBets />}
       {section === 'duels' && <ManageDuels />}
+      {section === 'tournament' && <ManageTournamentBets />}
       {section === 'users' && <ManageUsers />}
     </div>
   );
@@ -1401,6 +1403,444 @@ function AdjustmentLogModal({ user, onClose }) {
             </div>
           ))
         )}
+      </div>
+    </div>
+  );
+}
+
+// =================== TOURNAMENT BETS ===================
+function ManageTournamentBets() {
+  const [tournamentBets, setTournamentBets] = useState([]);
+  const [showAdd, setShowAdd] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [settling, setSettling] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    const q = query(collection(db, 'tournamentBets'), orderBy('createdAt', 'asc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setTournamentBets(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
+
+  const deleteBet = async (tb) => {
+    if (!confirm(`למחוק את הניחוש "${tb.title}"?\nכל הניחושים של המשתמשים יימחקו (לא יחזרו נקודות).`)) return;
+    setBusy(tb.id);
+    try {
+      // Delete user predictions
+      const usersSnap = await getDocs(collection(db, 'users'));
+      const batch = writeBatch(db);
+      for (const userDoc of usersSnap.docs) {
+        const predRef = doc(db, 'users', userDoc.id, 'tournamentPredictions', tb.id);
+        const predSnap = await getDoc(predRef);
+        if (predSnap.exists()) batch.delete(predRef);
+      }
+      batch.delete(doc(db, 'tournamentBets', tb.id));
+      await batch.commit();
+      setMsg('✓ נמחק');
+      setTimeout(() => setMsg(''), 2000);
+    } catch (e) {
+      setMsg('שגיאה: ' + e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <>
+      <div className="row-2" style={{ marginBottom: 16 }}>
+        <button className="btn btn-gold" onClick={() => setShowAdd(true)}>
+          + ניחוש טורניר חדש
+        </button>
+      </div>
+
+      <div className="admin-card" style={{ marginBottom: 16, fontSize: 13, color: 'var(--text-dim)' }}>
+        💡 <strong>איך זה עובד:</strong> שחקנים בוחרים תשובה אחת חינם (בלי לסכן נקודות). אם פגעו - מקבלים את הנקודות של היחס. ההנגב לטבלה הראשית (matchPoints).
+      </div>
+
+      {msg && (
+        <div className={msg.includes('✓') ? 'success-msg' : 'error-msg'}>{msg}</div>
+      )}
+
+      {tournamentBets.length === 0 ? (
+        <div className="empty">
+          <div className="empty-icon">🏆</div>
+          <p>עוד אין ניחושי טורניר</p>
+        </div>
+      ) : tournamentBets.map((tb) => (
+        <div key={tb.id} className="admin-card">
+          <div className="flex-between" style={{ marginBottom: 6 }}>
+            <strong>{tb.title}</strong>
+            {tb.settled && <span className="match-status finished">הוכרע</span>}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 10 }}>
+            נסגר: {formatDateTime(tb.closesAt)} · {(tb.options || []).length} אפשרויות
+            {tb.settled && tb.winningKey && (
+              <span> · 🏆 זכה: {tb.options.find((o) => o.key === tb.winningKey)?.label}</span>
+            )}
+          </div>
+
+          {!tb.settled ? (
+            <div className="row-3">
+              <button className="btn-sm btn-secondary" onClick={() => setEditing(tb)} disabled={busy === tb.id}>ערוך</button>
+              <button className="btn-sm btn-gold" onClick={() => setSettling(tb)} disabled={busy === tb.id}>הכרע</button>
+              <button className="btn-sm btn-danger" onClick={() => deleteBet(tb)} disabled={busy === tb.id}>
+                {busy === tb.id ? '…' : '🗑️'}
+              </button>
+            </div>
+          ) : (
+            <button className="btn-sm btn-danger" onClick={() => deleteBet(tb)} disabled={busy === tb.id}>
+              🗑️ מחק
+            </button>
+          )}
+        </div>
+      ))}
+
+      {showAdd && <TournamentBetFormModal onClose={() => setShowAdd(false)} />}
+      {editing && <TournamentBetFormModal bet={editing} onClose={() => setEditing(null)} />}
+      {settling && <SettleTournamentBetModal bet={settling} onClose={() => setSettling(null)} />}
+    </>
+  );
+}
+
+// Form for creating/editing tournament bets - with preset templates
+function TournamentBetFormModal({ bet, onClose }) {
+  const isEdit = !!bet;
+  const [title, setTitle] = useState(bet?.title || '');
+  const [description, setDescription] = useState(bet?.description || '');
+  const [closesAt, setClosesAt] = useState(
+    bet?.closesAt
+      ? toLocalInputValue(bet.closesAt.toMillis ? bet.closesAt.toMillis() : bet.closesAt)
+      : '2026-06-10T20:00'
+  );
+  const [options, setOptions] = useState(bet?.options || []);
+  const [err, setErr] = useState('');
+
+  // Add option row
+  const addOption = () => {
+    const newKey = `opt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setOptions([...options, { key: newKey, label: '', flag: '', odds: 5 }]);
+  };
+
+  const updateOption = (idx, field, value) => {
+    const next = [...options];
+    next[idx] = { ...next[idx], [field]: field === 'odds' ? Number(value) || 0 : value };
+    setOptions(next);
+  };
+
+  const removeOption = (idx) => {
+    setOptions(options.filter((_, i) => i !== idx));
+  };
+
+  // Apply a preset
+  const applyPreset = (presetType) => {
+    if (options.length > 0 && !confirm('זה ידרוס את האפשרויות הקיימות. להמשיך?')) return;
+
+    if (presetType === 'winner') {
+      setTitle(title || '🏆 מי תזכה במונדיאל?');
+      setDescription('הקבוצה הזוכה בגמר המונדיאל 2026');
+      // 48 teams from TEAMS list, with default odds 30
+      const teamOpts = TEAMS_LIST.map((t) => ({
+        key: t.name,
+        label: t.he,
+        flag: t.flag,
+        odds: 30, // default - admin will adjust
+      }));
+      setOptions(teamOpts);
+    } else if (presetType === 'finalists') {
+      setTitle(title || '🥈 מי יגיע לגמר?');
+      setDescription('כל קבוצה שתגיע לגמר');
+      const teamOpts = TEAMS_LIST.map((t) => ({
+        key: t.name,
+        label: t.he,
+        flag: t.flag,
+        odds: 15,
+      }));
+      setOptions(teamOpts);
+    } else if (presetType === 'topscorer') {
+      setTitle(title || '⚽ מלך השערים');
+      setDescription('הכובש הכי הרבה שערים בטורניר');
+      setOptions([
+        { key: 'mbappe', label: 'קיליאן אמבפה', flag: '🇫🇷', odds: 6 },
+        { key: 'kane', label: 'הארי קיין', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', odds: 7 },
+        { key: 'messi', label: 'ליאו מסי', flag: '🇦🇷', odds: 14 },
+        { key: 'haaland', label: 'ארלינג הולאנד', flag: '🇳🇴', odds: 14 },
+        { key: 'yamal', label: 'למין ימאל', flag: '🇪🇸', odds: 14 },
+        { key: 'ronaldo', label: 'כריסטיאנו רונאלדו', flag: '🇵🇹', odds: 25 },
+        { key: 'vinicius', label: 'ויניסיוס ז\'וניור', flag: '🇧🇷', odds: 33 },
+        { key: 'lautaro', label: 'לאוטרו מרטינס', flag: '🇦🇷', odds: 33 },
+        { key: 'lukaku', label: 'רומלו לוקאקו', flag: '🇧🇪', odds: 33 },
+        { key: 'neymar', label: 'ניימאר', flag: '🇧🇷', odds: 40 },
+        { key: 'bellingham', label: 'ג\'וד בלינגהאם', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', odds: 66 },
+        { key: 'musiala', label: 'ג\'מאל מוסיאלה', flag: '🇩🇪', odds: 80 },
+        { key: 'other', label: 'אחר', flag: '⚽', odds: 8 },
+      ]);
+    }
+  };
+
+  const save = async () => {
+    setErr('');
+    if (!title.trim()) { setErr('כותרת חובה'); return; }
+    if (!closesAt) { setErr('זמן סגירה חובה'); return; }
+    if (options.length < 2) { setErr('נדרשות לפחות 2 אפשרויות'); return; }
+    // Validate all options have label + odds
+    for (const opt of options) {
+      if (!opt.label.trim()) { setErr('כל האפשרויות חייבות כותרת'); return; }
+      if (!opt.odds || opt.odds <= 0) { setErr(`האפשרות "${opt.label}" חסר יחס תקין`); return; }
+    }
+    // Check duplicate keys
+    const keys = new Set(options.map((o) => o.key));
+    if (keys.size !== options.length) { setErr('יש כפילות במזהי האפשרויות'); return; }
+
+    const data = {
+      title: title.trim(),
+      description: description.trim(),
+      closesAt: new Date(closesAt),
+      options,
+      settled: bet?.settled || false,
+    };
+    if (isEdit) {
+      await updateDoc(doc(db, 'tournamentBets', bet.id), data);
+    } else {
+      await addDoc(collection(db, 'tournamentBets'), { ...data, createdAt: serverTimestamp() });
+    }
+    onClose();
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxHeight: '95vh' }}>
+        <button className="modal-close" onClick={onClose}>✕</button>
+        <h3 className="modal-title">{isEdit ? 'ערוך ניחוש טורניר' : 'ניחוש טורניר חדש'}</h3>
+        {err && <div className="error-msg">{err}</div>}
+
+        {!isEdit && (
+          <div className="field">
+            <label>תבנית מוכנה (אופציונלי)</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button type="button" className="btn-sm btn-secondary" onClick={() => applyPreset('winner')} style={{ flex: 1, minWidth: 120 }}>
+                🏆 זוכה מונדיאל
+              </button>
+              <button type="button" className="btn-sm btn-secondary" onClick={() => applyPreset('finalists')} style={{ flex: 1, minWidth: 120 }}>
+                🥈 מגיע לגמר
+              </button>
+              <button type="button" className="btn-sm btn-secondary" onClick={() => applyPreset('topscorer')} style={{ flex: 1, minWidth: 120 }}>
+                ⚽ מלך שערים
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              לחיצה על תבנית תמלא אוטומטית - אחר כך תוכל לערוך את היחסים
+            </div>
+          </div>
+        )}
+
+        <div className="field">
+          <label>כותרת</label>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="לדוגמה: מי תזכה במונדיאל?" />
+        </div>
+
+        <div className="field">
+          <label>תיאור (אופציונלי)</label>
+          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows="2" />
+        </div>
+
+        <div className="field">
+          <label>זמן סגירה (מומלץ: 24 שעות לפני פתיחת המונדיאל)</label>
+          <input type="datetime-local" value={closesAt} onChange={(e) => setClosesAt(e.target.value)} />
+        </div>
+
+        <div className="field">
+          <label>אפשרויות + יחס נקודות ({options.length})</label>
+          <div style={{
+            maxHeight: 320,
+            overflowY: 'auto',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            padding: 6,
+            background: 'var(--surface-2)',
+          }}>
+            {options.length === 0 ? (
+              <div style={{ padding: 14, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                לחץ "+ הוסף אפשרות" או על תבנית מוכנה למעלה
+              </div>
+            ) : options.map((opt, idx) => (
+              <div key={opt.key} style={{
+                display: 'grid',
+                gridTemplateColumns: '40px 1fr 80px 36px',
+                gap: 6,
+                marginBottom: 4,
+                alignItems: 'center',
+              }}>
+                <input
+                  value={opt.flag || ''}
+                  onChange={(e) => updateOption(idx, 'flag', e.target.value)}
+                  placeholder="🏳️"
+                  style={{ textAlign: 'center', padding: '8px 4px' }}
+                />
+                <input
+                  value={opt.label}
+                  onChange={(e) => updateOption(idx, 'label', e.target.value)}
+                  placeholder="שם"
+                  style={{ padding: '8px 10px' }}
+                />
+                <input
+                  type="number"
+                  value={opt.odds}
+                  onChange={(e) => updateOption(idx, 'odds', e.target.value)}
+                  placeholder="יחס"
+                  min="1"
+                  style={{ textAlign: 'center', padding: '8px 4px' }}
+                />
+                <button
+                  type="button"
+                  onClick={() => removeOption(idx)}
+                  style={{
+                    background: 'rgba(239,68,68,0.15)',
+                    border: '1px solid rgba(239,68,68,0.3)',
+                    borderRadius: 'var(--radius-sm)',
+                    color: '#fca5a5',
+                    fontSize: 16,
+                    cursor: 'pointer',
+                  }}
+                >×</button>
+              </div>
+            ))}
+          </div>
+          <button type="button" className="btn-sm btn-secondary" onClick={addOption} style={{ marginTop: 8, width: '100%' }}>
+            + הוסף אפשרות
+          </button>
+        </div>
+
+        <button className="btn" onClick={save}>{isEdit ? 'שמור שינויים' : 'צור ניחוש'}</button>
+      </div>
+    </div>
+  );
+}
+
+// Settle a tournament bet - pick the winning option and award points
+function SettleTournamentBetModal({ bet, onClose }) {
+  const [winningKey, setWinningKey] = useState(bet.winningKey || '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const settle = async () => {
+    if (!winningKey) { setErr('בחר את התוצאה'); return; }
+    const winningOption = bet.options.find((o) => o.key === winningKey);
+    if (!winningOption) { setErr('בחירה לא תקינה'); return; }
+
+    setBusy(true);
+    setErr('');
+    try {
+      // Update bet doc
+      await updateDoc(doc(db, 'tournamentBets', bet.id), {
+        settled: true,
+        winningKey,
+        settledAt: serverTimestamp(),
+      });
+
+      // Find all users who predicted, award points to winners
+      const usersSnap = await getDocs(collection(db, 'users'));
+      const batch = writeBatch(db);
+      let winnersCount = 0;
+
+      for (const userDoc of usersSnap.docs) {
+        const uid = userDoc.id;
+        const userData = userDoc.data();
+        if (userData.status && userData.status !== 'approved') continue;
+
+        const predRef = doc(db, 'users', uid, 'tournamentPredictions', bet.id);
+        const predSnap = await getDoc(predRef);
+        if (!predSnap.exists()) continue;
+
+        const pred = predSnap.data();
+        if (pred.settled) continue;
+
+        const won = pred.optionKey === winningKey;
+        const pointsEarned = won ? (winningOption.odds || 0) : 0;
+
+        batch.update(predRef, {
+          settled: true,
+          won,
+          pointsEarned,
+        });
+
+        if (won) {
+          // Award points to matchPoints (main leaderboard) and balance
+          batch.update(doc(db, 'users', uid), {
+            matchPoints: (userData.matchPoints || 0) + pointsEarned,
+            balance: (userData.balance || 0) + pointsEarned,
+          });
+          winnersCount++;
+        }
+      }
+
+      await batch.commit();
+      alert(`✓ הוכרע! ${winnersCount} שחקנים פגעו וקיבלו ${winningOption.odds} נקודות.`);
+      onClose();
+    } catch (e) {
+      setErr('שגיאה: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sortedOptions = [...(bet.options || [])].sort((a, b) => (a.odds || 0) - (b.odds || 0));
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <button className="modal-close" onClick={onClose}>✕</button>
+        <h3 className="modal-title">הכרעת ניחוש</h3>
+        <p style={{ marginBottom: 16 }}>"{bet.title}"</p>
+        {err && <div className="error-msg">{err}</div>}
+
+        <div className="field">
+          <label>מה התוצאה האמיתית?</label>
+          <div style={{
+            maxHeight: 320,
+            overflowY: 'auto',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+          }}>
+            {sortedOptions.map((opt) => (
+              <div
+                key={opt.key}
+                onClick={() => setWinningKey(opt.key)}
+                style={{
+                  padding: '10px 12px',
+                  borderBottom: '1px solid var(--border)',
+                  cursor: 'pointer',
+                  background: winningKey === opt.key ? 'rgba(245,197,66,0.15)' : 'transparent',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                }}
+              >
+                <span style={{
+                  width: 16, height: 16, border: '2px solid var(--gold)',
+                  borderRadius: '50%', display: 'grid', placeItems: 'center',
+                  background: winningKey === opt.key ? 'var(--gold)' : 'transparent',
+                  flexShrink: 0,
+                }}>{winningKey === opt.key && <span style={{ color: 'var(--bg)', fontSize: 10 }}>●</span>}</span>
+                {opt.flag && <span style={{ fontSize: 18 }}>{opt.flag}</span>}
+                <span style={{ flex: 1, fontSize: 14 }}>{opt.label}</span>
+                <span style={{ fontFamily: 'Frank Ruhl Libre, serif', fontWeight: 700, color: 'var(--gold)' }}>
+                  +{opt.odds}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <p style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 12 }}>
+          ⚠️ כל מי שניחש את התשובה הנכונה יקבל את הנקודות לטבלה הראשית.
+        </p>
+
+        <button className="btn btn-gold" onClick={settle} disabled={busy}>
+          {busy ? 'מסכם…' : '✓ הכרע וחלק נקודות'}
+        </button>
       </div>
     </div>
   );
